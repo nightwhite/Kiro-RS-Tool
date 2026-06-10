@@ -1,18 +1,21 @@
 # Used by .github/workflows/release.yaml only.
-# Expects pre-built static binaries placed at:
+# Expects pre-built Linux binaries placed at:
 #   artifacts/linux/amd64/kiro-rs
 #   artifacts/linux/arm64/kiro-rs
 # Build with: docker buildx build --platform linux/amd64 --build-arg TARGETARCH=amd64 -f Dockerfile.release .
 
-FROM alpine:3.21
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libgcc-s1 \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 ARG TARGETARCH
 COPY artifacts/linux/${TARGETARCH}/kiro-rs /app/kiro-rs
 RUN chmod +x /app/kiro-rs
+RUN /app/kiro-rs --version
 
 VOLUME ["/app/config"]
 

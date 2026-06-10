@@ -6,6 +6,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### 🛠 修复
+
+- **修复 release Docker 镜像启动失败**：`Dockerfile.release` 运行层从 Alpine 改为 Debian slim，兼容 `cargo build --release` 产出的 glibc 动态链接 Linux 二进制，并在镜像构建阶段执行 `/app/kiro-rs --version` 早失败校验，避免发布后出现 `exec ./kiro-rs: no such file or directory`。
+
 ## [2026.1.8] - 2026-06-10
 
 主题：**Admin 批量导入验活 hotfix**。本版本基于 `v2026.1.7`，补齐凭据导入后的瞬态上游故障处理，避免 502/429/网络抖动被误判为永久无效凭据。
