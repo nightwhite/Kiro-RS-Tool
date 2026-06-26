@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workflow=".github/workflows/build.yml"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+workflow="$script_dir/../.github/workflows/build.yml"
 
 if [[ ! -f "$workflow" ]]; then
   echo "missing $workflow" >&2
@@ -11,7 +12,7 @@ fi
 require_entry() {
   local entry="$1"
 
-  if ! grep -q "$entry" "$workflow"; then
+  if ! grep -Fq -- "$entry" "$workflow"; then
     echo "missing required workflow entry: $entry" >&2
     exit 1
   fi
