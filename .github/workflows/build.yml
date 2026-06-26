@@ -1,0 +1,69 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - master
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-x86_64:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libssl-dev perl make
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1"
+
+      - name: Install Admin UI dependencies
+        working-directory: admin-ui
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build Admin UI
+        working-directory: admin-ui
+        run: bun run build
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test Rust
+        run: cargo test --locked
+
+      - name: Build Rust release binary
+        run: cargo build --release --locked
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/release/kiro-rs dist/kiro-rs-linux-x86_64
+          chmod +x dist/kiro-rs-linux-x86_64
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiro-rs-linux-x86_64
+          path: dist/kiro-rs-linux-x86_64
+          if-no-files-found: error
