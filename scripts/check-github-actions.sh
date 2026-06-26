@@ -8,7 +8,16 @@ if [[ ! -f "$workflow" ]]; then
   exit 1
 fi
 
-grep -q "bun run build" "$workflow"
-grep -q "cargo test --locked" "$workflow"
-grep -q "cargo build --release --locked" "$workflow"
-grep -q "actions/upload-artifact" "$workflow"
+require_entry() {
+  local entry="$1"
+
+  if ! grep -q "$entry" "$workflow"; then
+    echo "missing required workflow entry: $entry" >&2
+    exit 1
+  fi
+}
+
+require_entry "bun run build"
+require_entry "cargo test --locked"
+require_entry "cargo build --release --locked"
+require_entry "actions/upload-artifact"
