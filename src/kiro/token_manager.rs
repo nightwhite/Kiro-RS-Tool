@@ -72,6 +72,13 @@ fn cooldown_remaining_ms(until: Option<Instant>) -> Option<u64> {
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
 }
 
+fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
+}
+
 /// 生成 API Key 脱敏展示(前 4 + ... + 后 4,长度不足或非 ASCII 回退 ***)
 fn mask_api_key(key: &str) -> String {
     if key.is_ascii() && key.len() > 16 {
@@ -1176,7 +1183,7 @@ impl MultiTokenManager {
 
         // 检查是否是 opus 模型
         let is_opus = model
-            .map(|m| m.to_lowercase().contains("opus"))
+            .map(|m| contains_ascii_case_insensitive(m, b"opus"))
             .unwrap_or(false);
 
         // 过滤可用凭据
@@ -1237,11 +1244,10 @@ impl MultiTokenManager {
         }
 
         if let Some(title) = credentials.subscription_title.as_deref() {
-            let title_upper = title.to_uppercase();
-            if title_upper.contains("POWER") {
+            if contains_ascii_case_insensitive(title, b"POWER") {
                 return 10;
             }
-            if title_upper.contains("PRO") {
+            if contains_ascii_case_insensitive(title, b"PRO") {
                 return 3;
             }
         }
@@ -1253,7 +1259,7 @@ impl MultiTokenManager {
         let mut entries = self.entries.lock();
         let now = Instant::now();
         let is_opus = model
-            .map(|m| m.to_lowercase().contains("opus"))
+            .map(|m| contains_ascii_case_insensitive(m, b"opus"))
             .unwrap_or(false);
         let mode = self.load_balancing_mode.lock().clone();
         let default_limit = self.config.read().default_concurrency_limit;
@@ -4062,6 +4068,17 @@ mod tests {
         let second = manager.acquire_call(None).await.unwrap();
 
         assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn test_contains_ascii_case_insensitive_matches_model_and_subscription_tokens() {
+        assert!(contains_ascii_case_insensitive(
+            "claude-4-OPUS-20250514",
+            b"opus"
+        ));
+        assert!(contains_ascii_case_insensitive("Kiro Power", b"POWER"));
+        assert!(contains_ascii_case_insensitive("kiro pro+", b"PRO"));
+        assert!(!contains_ascii_case_insensitive("basic", b"PRO"));
     }
 
     #[tokio::test]
