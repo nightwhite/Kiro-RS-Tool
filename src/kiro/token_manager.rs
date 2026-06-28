@@ -1268,17 +1268,40 @@ impl MultiTokenManager {
         let mode = self.load_balancing_mode.lock().clone();
         let default_limit = self.config.read().default_concurrency_limit;
 
-        let available_entries: Vec<_> = entries
+        let is_available = |e: &&CredentialEntry| {
+            !e.disabled
+                && !e.throttled_until.map(|t| t > now).unwrap_or(false)
+                && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
+                && (!is_opus || e.credentials.supports_opus())
+                && e.in_flight < self.credential_concurrent_limit(&e.credentials, default_limit)
+        };
+        let mut available_entries: Vec<_> = entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| {
-                !e.disabled
-                    && !e.throttled_until.map(|t| t > now).unwrap_or(false)
-                    && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
-                    && (!is_opus || e.credentials.supports_opus())
-                    && e.in_flight < self.credential_concurrent_limit(&e.credentials, default_limit)
-            })
+            .filter(|(_, e)| is_available(e))
             .collect();
+
+        if available_entries.is_empty()
+            && entries
+                .iter()
+                .any(|e| e.disabled && e.disabled_reason == Some(DisabledReason::TooManyFailures))
+        {
+            tracing::warn!(
+                "所有凭据均已被自动禁用，执行自愈：重置失败计数并重新启用（等价于重启）"
+            );
+            for e in entries.iter_mut() {
+                if e.disabled_reason == Some(DisabledReason::TooManyFailures) {
+                    e.disabled = false;
+                    e.disabled_reason = None;
+                    e.failure_count = 0;
+                }
+            }
+            available_entries = entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| is_available(e))
+                .collect();
+        }
 
         let best_idx = match mode.as_str() {
             "priority_group_balanced" => available_entries
@@ -3955,6 +3978,32 @@ mod tests {
 
         // 应触发自愈：重置失败计数并重新启用，避免必须重启进程
         let ctx = manager.acquire_context(None).await.unwrap();
+        assert!(ctx.token == "t1" || ctx.token == "t2");
+        assert_eq!(manager.available_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_multi_token_manager_acquire_call_auto_recovers_all_disabled() {
+        let config = Config::default();
+        let mut cred1 = KiroCredentials::default();
+        cred1.access_token = Some("t1".to_string());
+        cred1.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        let mut cred2 = KiroCredentials::default();
+        cred2.access_token = Some("t2".to_string());
+        cred2.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+
+        let manager = Arc::new(
+            MultiTokenManager::new(config, vec![cred1, cred2], None, None, false).unwrap(),
+        );
+
+        for _ in 0..MAX_FAILURES_PER_CREDENTIAL {
+            manager.report_failure(1);
+            manager.report_failure(2);
+        }
+
+        assert_eq!(manager.available_count(), 0);
+
+        let ctx = manager.acquire_call(None).await.unwrap();
         assert!(ctx.token == "t1" || ctx.token == "t2");
         assert_eq!(manager.available_count(), 2);
     }
