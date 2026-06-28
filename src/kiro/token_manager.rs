@@ -73,6 +73,10 @@ fn cooldown_remaining_ms(until: Option<Instant>) -> Option<u64> {
 }
 
 fn contains_ascii_case_insensitive(haystack: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
     haystack
         .as_bytes()
         .windows(needle.len())
@@ -1264,18 +1268,21 @@ impl MultiTokenManager {
         let mode = self.load_balancing_mode.lock().clone();
         let default_limit = self.config.read().default_concurrency_limit;
 
+        let available_entries: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                !e.disabled
+                    && !e.throttled_until.map(|t| t > now).unwrap_or(false)
+                    && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
+                    && (!is_opus || e.credentials.supports_opus())
+                    && e.in_flight < self.credential_concurrent_limit(&e.credentials, default_limit)
+            })
+            .collect();
+
         let best_idx = match mode.as_str() {
-            "priority_group_balanced" => entries
+            "priority_group_balanced" => available_entries
                 .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    !e.disabled
-                        && !e.throttled_until.map(|t| t > now).unwrap_or(false)
-                        && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
-                        && (!is_opus || e.credentials.supports_opus())
-                        && e.in_flight
-                            < self.credential_concurrent_limit(&e.credentials, default_limit)
-                })
                 .min_by(|(_, a), (_, b)| {
                     let a_limit =
                         self.credential_concurrent_limit(&a.credentials, default_limit) as u64;
@@ -1294,33 +1301,15 @@ impl MultiTokenManager {
                             b.credentials.priority,
                         ))
                 })
-                .map(|(idx, _)| idx),
-            "balanced" => entries
+                .map(|(idx, _)| *idx),
+            "balanced" => available_entries
                 .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    !e.disabled
-                        && !e.throttled_until.map(|t| t > now).unwrap_or(false)
-                        && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
-                        && (!is_opus || e.credentials.supports_opus())
-                        && e.in_flight
-                            < self.credential_concurrent_limit(&e.credentials, default_limit)
-                })
                 .min_by_key(|(_, e)| (e.in_flight, e.success_count, e.credentials.priority))
-                .map(|(idx, _)| idx),
-            _ => entries
+                .map(|(idx, _)| *idx),
+            _ => available_entries
                 .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    !e.disabled
-                        && !e.throttled_until.map(|t| t > now).unwrap_or(false)
-                        && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
-                        && (!is_opus || e.credentials.supports_opus())
-                        && e.in_flight
-                            < self.credential_concurrent_limit(&e.credentials, default_limit)
-                })
                 .min_by_key(|(_, e)| e.credentials.priority)
-                .map(|(idx, _)| idx),
+                .map(|(idx, _)| *idx),
         }?;
 
         let entry = &mut entries[best_idx];
@@ -4095,6 +4084,7 @@ mod tests {
         assert!(contains_ascii_case_insensitive("Kiro Power", b"POWER"));
         assert!(contains_ascii_case_insensitive("kiro pro+", b"PRO"));
         assert!(!contains_ascii_case_insensitive("basic", b"PRO"));
+        assert!(contains_ascii_case_insensitive("anything", b""));
     }
 
     #[tokio::test]
