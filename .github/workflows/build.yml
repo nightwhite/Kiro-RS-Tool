@@ -12,13 +12,15 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 env:
   CARGO_TERM_COLOR: always
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/kiro-rs-tool
 
 jobs:
-  linux-x86_64:
-    name: Linux x86_64
+  docker:
+    name: Docker image
     runs-on: ubuntu-24.04
 
     steps:
@@ -52,18 +54,36 @@ jobs:
       - name: Test Rust
         run: cargo test --locked
 
-      - name: Build Rust release binary
-        run: cargo build --release --locked
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Package binary
-        run: |
-          mkdir -p dist
-          cp target/release/kiro-rs dist/kiro-rs-linux-x86_64
-          chmod +x dist/kiro-rs-linux-x86_64
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
-          name: kiro-rs-linux-x86_64
-          path: dist/kiro-rs-linux-x86_64
-          if-no-files-found: error
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,prefix=sha-
+
+      - name: Build and publish Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

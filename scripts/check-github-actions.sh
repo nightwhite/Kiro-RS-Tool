@@ -20,5 +20,6 @@ require_entry() {
 
 require_entry "bun run build"
 require_entry "cargo test --locked"
-require_entry "cargo build --release --locked"
-require_entry "actions/upload-artifact"
+require_entry "docker/build-push-action"
+require_entry "push: \${{ github.event_name != 'pull_request' }}"
+require_entry "ghcr.io/\${{ github.repository_owner }}/kiro-rs-tool"
