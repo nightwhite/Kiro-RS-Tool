@@ -625,6 +625,16 @@ export function CredentialCard({
               </dd>
             </div>
             <div className="flex items-center justify-between gap-2">
+              <dt className="text-muted-foreground">优先组</dt>
+              <dd className="tabular-nums font-medium">{credential.priorityGroup}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <dt className="text-muted-foreground">实时并发</dt>
+              <dd className="tabular-nums font-medium">
+                {credential.inFlight}/{credential.concurrentLimit}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-2">
               <dt className="text-muted-foreground">成功次数</dt>
               <dd>
                 <button

@@ -369,6 +369,7 @@ async fn run_round(
         }
     };
     let credential_id = call_result.credential_id;
+    let permit = call_result.permit;
     let outcome = decode_round(
         call_result.response,
         &payload.model,
@@ -376,6 +377,7 @@ async fn run_round(
         first_byte_marker,
     )
     .await;
+    drop(permit);
     if let Some(message) = &outcome.tool_json_error {
         hook.record(0, fallback_input_tokens, 0, 0, 0, 0.0, "error");
         tracer.finalize("error", last_attempt_outcome(tracer), Some(message), None);

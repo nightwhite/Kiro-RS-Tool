@@ -10,6 +10,7 @@ export interface CredentialsStatusResponse {
 export interface CredentialStatusItem {
   id: number
   priority: number
+  priorityGroup: number
   disabled: boolean
   failureCount: number
   /** 累计失败次数（所有失败类型，只增不减，仅手动重置归零） */
@@ -37,6 +38,9 @@ export interface CredentialStatusItem {
   endpoint: string
   configuredEndpoint?: string | null
   effectiveEndpoint: string
+  inFlight: number
+  concurrentLimit: number
+  configuredConcurrentLimit?: number | null
   /** 后端缓存的最近一次余额（5 分钟内） */
   balance?: BalanceResponse
   /** 余额缓存的更新时间（Unix 秒） */
@@ -113,6 +117,7 @@ export interface AddCredentialRequest {
   clientSecret?: string
   startUrl?: string
   priority?: number
+  priorityGroup?: number
   authRegion?: string
   apiRegion?: string
   machineId?: string
@@ -121,6 +126,7 @@ export interface AddCredentialRequest {
   proxyPassword?: string
   kiroApiKey?: string
   endpoint?: string
+  concurrentLimit?: number
   email?: string
 }
 
@@ -138,6 +144,8 @@ export interface UpdateCredentialRequest {
   proxyUrl?: string
   proxyUsername?: string
   proxyPassword?: string
+  concurrentLimit?: number
+  priorityGroup?: number
 }
 
 // 更新 refreshToken 请求

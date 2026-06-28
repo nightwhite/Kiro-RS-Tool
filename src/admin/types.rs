@@ -28,6 +28,8 @@ pub struct CredentialStatusItem {
     pub id: u64,
     /// 优先级（数字越小优先级越高）
     pub priority: u32,
+    /// 优先组（数字越小越先使用）
+    pub priority_group: u32,
     /// 是否被禁用
     pub disabled: bool,
     /// 连续失败次数
@@ -83,6 +85,13 @@ pub struct CredentialStatusItem {
     /// 普通 429 限流冷却剩余毫秒兼容字段
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_limited_until_ms: Option<u64>,
+    /// 当前进程内正在占用该凭据的上游请求数。
+    pub in_flight: u32,
+    /// 当前生效的并发上限。
+    pub concurrent_limit: u32,
+    /// 凭据级显式并发上限。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_concurrent_limit: Option<u32>,
 }
 
 /// 当前运行兼容配置
@@ -205,6 +214,10 @@ pub struct AddCredentialRequest {
     #[serde(default)]
     pub priority: u32,
 
+    /// 优先组（可选，默认 0）
+    #[serde(default)]
+    pub priority_group: u32,
+
     /// 凭据级 Region 配置（用于 OIDC token 刷新）
     /// 未配置时回退到 config.json 的全局 region
     pub region: Option<String>,
@@ -239,6 +252,10 @@ pub struct AddCredentialRequest {
     /// 端点名称（可选，未配置时使用 config.defaultEndpoint）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// 凭据级并发上限（可选，未配置时自动按订阅或全局默认计算）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub concurrent_limit: Option<u32>,
 }
 
 fn default_auth_method() -> String {
@@ -271,6 +288,10 @@ pub struct UpdateCredentialRequest {
     pub proxy_username: Option<String>,
     /// 凭据级代理认证密码
     pub proxy_password: Option<String>,
+    /// 凭据级并发上限；None 表示不修改，0 表示清除覆盖。
+    pub concurrent_limit: Option<u32>,
+    /// 优先组；None 表示不修改。
+    pub priority_group: Option<u32>,
 }
 
 /// 添加凭据成功响应

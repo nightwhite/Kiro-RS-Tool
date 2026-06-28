@@ -20,6 +20,7 @@ import {
   useLoadBalancingMode, useSetLoadBalancingMode,
   useAccountThrottleConfig, useSetAccountThrottleConfig,
 } from '@/hooks/use-credentials'
+import type { LoadBalancingMode } from '@/api/credentials'
 import { useUpdateCheck } from '@/hooks/use-update-check'
 import { updateAdminKey, updateApiKey } from '@/api/credentials'
 import { extractErrorMessage, generateApiKey } from '@/lib/utils'
@@ -58,9 +59,20 @@ export function TopbarTools() {
 
   const handleToggleLoadBalancing = () => {
     const cur = loadBalancingData?.mode || 'priority'
-    const next = cur === 'priority' ? 'balanced' : 'priority'
+    const next: LoadBalancingMode =
+      cur === 'priority'
+        ? 'balanced'
+        : cur === 'balanced'
+          ? 'priority_group_balanced'
+          : 'priority'
+    const label =
+      next === 'priority'
+        ? '优先级模式'
+        : next === 'balanced'
+          ? '均衡负载模式'
+          : '分层均衡模式'
     setLoadBalancingMode(next, {
-      onSuccess: () => toast.success(`已切换到${next === 'priority' ? '优先级模式' : '均衡负载模式'}`),
+      onSuccess: () => toast.success(`已切换到${label}`),
       onError: (err) => toast.error(`切换失败: ${extractErrorMessage(err)}`),
     })
   }
@@ -118,7 +130,13 @@ export function TopbarTools() {
       >
         <Activity className="h-3.5 w-3.5" />
         <span className="hidden md:inline">
-          {isLoadingMode ? '加载中…' : (loadBalancingData?.mode === 'priority' ? '优先级' : '均衡负载')}
+          {isLoadingMode
+            ? '加载中…'
+            : loadBalancingData?.mode === 'priority'
+              ? '优先级'
+              : loadBalancingData?.mode === 'balanced'
+                ? '均衡负载'
+                : '分层均衡'}
         </span>
       </Button>
       <ThrottleConfigButton

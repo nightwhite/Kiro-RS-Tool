@@ -485,6 +485,7 @@ impl AdminService {
                 CredentialStatusItem {
                     id: entry.id,
                     priority: entry.priority,
+                    priority_group: entry.priority_group,
                     disabled: entry.disabled,
                     failure_count: entry.failure_count,
                     total_failure_count: entry.total_failure_count,
@@ -509,6 +510,9 @@ impl AdminService {
                     balance_updated_at,
                     rate_limited_for_ms: entry.rate_limited_for_ms,
                     rate_limited_until_ms: entry.rate_limited_until_ms,
+                    in_flight: entry.in_flight,
+                    concurrent_limit: entry.concurrent_limit,
+                    configured_concurrent_limit: entry.configured_concurrent_limit,
                 }
             })
             .collect();
@@ -1005,6 +1009,7 @@ impl AdminService {
             client_secret: req.client_secret,
             start_url: req.start_url,
             priority: req.priority,
+            priority_group: req.priority_group,
             region: req.region,
             auth_region: req.auth_region,
             api_region: req.api_region,
@@ -1017,6 +1022,7 @@ impl AdminService {
             disabled: false, // 新添加的凭据默认启用
             kiro_api_key: req.kiro_api_key,
             endpoint: req.endpoint,
+            concurrent_limit: req.concurrent_limit,
         };
 
         // 调用 token_manager 添加凭据
@@ -1063,6 +1069,9 @@ impl AdminService {
                     .map(|v| if v.is_empty() { None } else { Some(v) }),
                 req.proxy_password
                     .map(|v| if v.is_empty() { None } else { Some(v) }),
+                req.concurrent_limit
+                    .map(|v| if v == 0 { None } else { Some(v) }),
+                req.priority_group,
             )
             .map_err(|e| self.classify_error(e, id))
     }
@@ -1874,9 +1883,10 @@ impl AdminService {
         req: SetLoadBalancingModeRequest,
     ) -> Result<LoadBalancingModeResponse, AdminServiceError> {
         // 验证模式值
-        if req.mode != "priority" && req.mode != "balanced" {
+        if req.mode != "priority" && req.mode != "balanced" && req.mode != "priority_group_balanced"
+        {
             return Err(AdminServiceError::InvalidCredential(
-                "mode 必须是 'priority' 或 'balanced'".to_string(),
+                "mode 必须是 'priority'、'balanced' 或 'priority_group_balanced'".to_string(),
             ));
         }
 
@@ -2391,6 +2401,8 @@ impl AdminService {
                 Some(proxy_url), // 设置或清除 proxy_url（Some(None) = 清除，Some(Some(url)) = 设置）
                 None,            // proxy_username 不修改
                 None,            // proxy_password 不修改
+                None,            // concurrent_limit 不修改
+                None,            // priority_group 不修改
             )
             .map_err(|e| {
                 let msg = e.to_string();
@@ -2460,7 +2472,7 @@ impl AdminService {
             let url = urls[i % urls.len()].clone();
             if self
                 .token_manager
-                .update_credential(*cred_id, None, Some(Some(url)), None, None)
+                .update_credential(*cred_id, None, Some(Some(url)), None, None, None, None)
                 .is_ok()
             {
                 assigned += 1;
@@ -2606,6 +2618,7 @@ impl AdminService {
         let cred_template = KiroCredentials {
             auth_method: Some("social".to_string()),
             priority: req.priority,
+            priority_group: 0,
             email: req.email,
             proxy_url: req.proxy_url,
             ..Default::default()
@@ -2877,6 +2890,7 @@ impl AdminService {
             start_url: Some(start_url.to_string()),
             region: Some(req.region.clone()),
             priority: req.priority,
+            priority_group: 0,
             email: req.email,
             proxy_url: req.proxy_url,
             ..Default::default()

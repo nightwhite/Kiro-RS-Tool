@@ -364,6 +364,17 @@ fn conversion_error_response(e: &ConversionError) -> (&'static str, String) {
 fn provider_error_status_and_detail(err: &Error) -> (StatusCode, &'static str, String) {
     let err_str = err.to_string();
 
+    if err
+        .downcast_ref::<crate::kiro::token_manager::ConcurrencyLimitExceededError>()
+        .is_some()
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limit_error",
+            "All configured accounts are at their concurrency limit. Retry when an active request finishes.".to_string(),
+        );
+    }
+
     // 上下文窗口满了（对话历史累积超出模型上下文窗口限制）
     if err_str.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD") {
         tracing::warn!(error = %err, "上游拒绝请求：上下文窗口已满（不应重试）");
@@ -911,6 +922,7 @@ fn create_deferred_sse_stream(
 
         let response = call_result.response;
         let credential_id = call_result.credential_id;
+        let permit = call_result.permit;
 
         let mut ctx =
             StreamContext::new_with_thinking(model, input_tokens, thinking_enabled, tool_name_map);
@@ -923,6 +935,7 @@ fn create_deferred_sse_stream(
             initial_events,
             hook,
             credential_id,
+            permit,
             tracer,
             cache_plan,
         )) as ByteStream
@@ -939,6 +952,7 @@ fn create_sse_stream(
     initial_events: Vec<SseEvent>,
     hook: UsageRecordHook,
     credential_id: u64,
+    permit: crate::kiro::token_manager::CallPermit,
     tracer: std::sync::Arc<RequestTracer>,
     cache_plan: CacheUsagePlan,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
@@ -955,12 +969,13 @@ fn create_sse_stream(
             interval(Duration::from_secs(PING_INTERVAL_SECS)),
             hook,
             credential_id,
+            permit,
             tracer,
             0u64,
             cache_plan,
             Some(initial_events),
         ),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, hook, credential_id, tracer, mut sent_bytes, cache_plan, mut pending_initial_events)| async move {
+        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, hook, credential_id, permit, tracer, mut sent_bytes, cache_plan, mut pending_initial_events)| async move {
             if finished {
                 return None;
             }
@@ -1002,7 +1017,7 @@ fn create_sse_stream(
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
 
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, hook, credential_id, tracer, sent_bytes, cache_plan, pending_initial_events)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, hook, credential_id, permit, tracer, sent_bytes, cache_plan, pending_initial_events)))
                         }
                         Some(Err(e)) => {
                             tracing::error!("读取响应流失败: {}", e);
@@ -1021,7 +1036,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, hook, credential_id, tracer, sent_bytes, cache_plan, pending_initial_events)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, hook, credential_id, permit, tracer, sent_bytes, cache_plan, pending_initial_events)))
                         }
                         None => {
                             // 流结束，发送最终事件
@@ -1040,7 +1055,7 @@ fn create_sse_stream(
                                 .into_iter()
                                 .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                 .collect();
-                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, hook, credential_id, tracer, sent_bytes, cache_plan, pending_initial_events)))
+                            Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, hook, credential_id, permit, tracer, sent_bytes, cache_plan, pending_initial_events)))
                         }
                     }
                 }
@@ -1048,7 +1063,7 @@ fn create_sse_stream(
                 _ = ping_interval.tick(), if pending_initial_events.is_none() => {
                     tracing::trace!("发送 ping 保活事件");
                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, hook, credential_id, tracer, sent_bytes, cache_plan, pending_initial_events)))
+                    Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, hook, credential_id, permit, tracer, sent_bytes, cache_plan, pending_initial_events)))
                 }
             }
         },
@@ -1109,6 +1124,7 @@ async fn handle_non_stream_request(
     };
     let response = call_result.response;
     let credential_id = call_result.credential_id;
+    let permit = call_result.permit;
 
     // 读取响应体
     let body_bytes = match response.bytes().await {
@@ -1132,6 +1148,7 @@ async fn handle_non_stream_request(
                 .into_response();
         }
     };
+    drop(permit);
 
     // 解析事件流
     let mut decoder = EventStreamDecoder::new();
@@ -1786,6 +1803,7 @@ fn create_deferred_buffered_sse_stream(
 
         let response = call_result.response;
         let credential_id = call_result.credential_id;
+        let permit = call_result.permit;
 
         let mut ctx = BufferedStreamContext::new(
             model,
@@ -1800,6 +1818,7 @@ fn create_deferred_buffered_sse_stream(
             ctx,
             hook,
             credential_id,
+            permit,
             tracer,
             cache_plan,
         )) as ByteStream
@@ -1823,6 +1842,7 @@ fn create_buffered_sse_stream(
     ctx: BufferedStreamContext,
     hook: UsageRecordHook,
     credential_id: u64,
+    permit: crate::kiro::token_manager::CallPermit,
     tracer: std::sync::Arc<RequestTracer>,
     cache_plan: CacheUsagePlan,
 ) -> impl Stream<Item = Result<Bytes, Infallible>> {
@@ -1838,11 +1858,12 @@ fn create_buffered_sse_stream(
             false,
             hook,
             credential_id,
+            permit,
             tracer,
             0u64,
             cache_plan,
         ),
-        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, mut first_upstream_chunk_seen, hook, credential_id, tracer, mut sent_bytes, cache_plan)| async move {
+        |(mut body_stream, mut ctx, mut decoder, finished, mut ping_interval, mut first_upstream_chunk_seen, hook, credential_id, permit, tracer, mut sent_bytes, cache_plan)| async move {
             if finished {
                 return None;
             }
@@ -1857,7 +1878,7 @@ fn create_buffered_sse_stream(
                     _ = ping_interval.tick(), if first_upstream_chunk_seen => {
                         tracing::trace!("发送 ping 保活事件（缓冲模式）");
                         let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, first_upstream_chunk_seen, hook, credential_id, tracer, sent_bytes, cache_plan)));
+                        return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, first_upstream_chunk_seen, hook, credential_id, permit, tracer, sent_bytes, cache_plan)));
                     }
 
                     // 然后处理数据流
@@ -1887,7 +1908,7 @@ fn create_buffered_sse_stream(
                                     first_upstream_chunk_seen = true;
                                     ping_interval.reset();
                                     let bytes: Vec<Result<Bytes, Infallible>> = vec![Ok(create_ping_sse())];
-                                    return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, first_upstream_chunk_seen, hook, credential_id, tracer, sent_bytes, cache_plan)));
+                                    return Some((stream::iter(bytes), (body_stream, ctx, decoder, false, ping_interval, first_upstream_chunk_seen, hook, credential_id, permit, tracer, sent_bytes, cache_plan)));
                                 }
                                 // 继续读取下一个 chunk，不发送任何数据
                             }
@@ -1909,7 +1930,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, first_upstream_chunk_seen, hook, credential_id, tracer, sent_bytes, cache_plan)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, first_upstream_chunk_seen, hook, credential_id, permit, tracer, sent_bytes, cache_plan)));
                             }
                             None => {
                                 // 流结束，完成处理并返回所有事件（已更正 input_tokens）
@@ -1929,7 +1950,7 @@ fn create_buffered_sse_stream(
                                     .into_iter()
                                     .map(|e| Ok(Bytes::from(e.to_sse_string())))
                                     .collect();
-                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, first_upstream_chunk_seen, hook, credential_id, tracer, sent_bytes, cache_plan)));
+                                return Some((stream::iter(bytes), (body_stream, ctx, decoder, true, ping_interval, first_upstream_chunk_seen, hook, credential_id, permit, tracer, sent_bytes, cache_plan)));
                             }
                         }
                     }

@@ -9,6 +9,8 @@
   "toolCompatibilityMode": "claude-code",
   "updateAutoApply": false,
   "updateAutoApplyTime": "03:00",
+  "loadBalancingMode": "priority_group_balanced",
+  "defaultConcurrencyLimit": 3,
   "retryMode": "fast",
   "retryPolicy": null,
   "traceEnabled": true,

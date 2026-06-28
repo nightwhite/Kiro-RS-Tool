@@ -60,7 +60,7 @@
 - **流式响应**: 支持 SSE (Server-Sent Events) 流式输出
 - **Token 自动刷新**: 自动管理和刷新 OAuth Token
 - **多凭据支持**: 支持配置多个凭据，按优先级自动故障转移
-- **负载均衡**: 支持 `priority`（按优先级）和 `balanced`（均衡分配）两种模式
+- **负载均衡**: 支持 `priority`、`balanced` 和 `priority_group_balanced`（优先级分层均衡）三种模式
 - **智能重试**: 单凭据最多重试 3 次，单请求最多重试 9 次
 - **凭据回写**: 多凭据格式下自动回写刷新后的 Token
 - **Thinking 模式**: 支持 Claude 的 extended thinking 功能
@@ -330,7 +330,8 @@ tar -czf kiro-rs-backup-$(date +%F).tar.gz /opt/kiro-rs/data/
 | `adminApiKey` | string | - | Admin API 密钥，配置后启用凭据管理 API 和 Web 管理界面 |
 | `updateAutoApply` | boolean | `false` | 是否启用无人值守自动更新；开启后每天到 `updateAutoApplyTime` 自动从 GitHub Releases 下载新版本二进制并重启 |
 | `updateAutoApplyTime` | string | `03:00` | 自动更新触发时间（本地时区，HH:MM 24 小时制） |
-| `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`（按优先级）或 `balanced`（均衡分配） |
+| `loadBalancingMode` | string | `priority` | 负载均衡模式：`priority`、`balanced` 或 `priority_group_balanced` |
+| `defaultConcurrencyLimit` | number | `3` | 单凭据默认并发上限；凭据未配置且无法按订阅推断时使用 |
 | `retryMode` | string | `fast` | 普通 429 重试策略：`turbo` / `fast` / `balanced` / `steady` / `polite` / `custom` |
 | `retryPolicy` | object | - | `retryMode=custom` 时的自定义 429 策略，字段见下方示例 |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
@@ -361,7 +362,8 @@ tar -czf kiro-rs-backup-$(date +%F).tar.gz /opt/kiro-rs/data/
    "adminApiKey": "sk-admin-your-secret-key",
    "updateAutoApply": false,
    "updateAutoApplyTime": "03:00",
-   "loadBalancingMode": "priority",
+   "loadBalancingMode": "priority_group_balanced",
+   "defaultConcurrencyLimit": 3,
    "retryMode": "fast",
    "retryPolicy": null,
    "extractThinking": true,
@@ -403,6 +405,8 @@ tar -czf kiro-rs-backup-$(date +%F).tar.gz /opt/kiro-rs/data/
 | `clientId`     | string | IdC 登录的客户端 ID（IdC 认证必填）                     |
 | `clientSecret` | string | IdC 登录的客户端密钥（IdC 认证必填）                      |
 | `priority`     | number | 凭据优先级，数字越小越优先，默认为 0                         |
+| `priorityGroup`| number | 优先组，数字越小越先使用；同组内可均衡分摊，默认 0              |
+| `concurrentLimit` | number | 单凭据并发上限；未配置时按订阅或全局默认计算                  |
 | `region`       | string | 凭据级 Auth Region, 兼容字段                       |
 | `authRegion`   | string | 凭据级 Auth Region，用于 Token 刷新, 未配置时回退到 region |
 | `apiRegion`    | string | 凭据级 API Region，用于 API 请求                    |
@@ -469,6 +473,8 @@ tar -czf kiro-rs-backup-$(date +%F).tar.gz /opt/kiro-rs/data/
 
 多凭据特性：
 - 按 `priority` 字段排序，数字越小优先级越高（默认为 0）
+- `priority_group_balanced` 模式先按 `priorityGroup` 分层，组内按 `inFlight / concurrentLimit` 分摊；当前组满并发、禁用或冷却后才下沉到下一组
+- `concurrentLimit` 可单独覆盖账号并发；未配置时 Pro/Pro+ 默认 3，Power 默认 10，未知订阅使用 `defaultConcurrencyLimit`
 - 单凭据最多重试 3 次，单请求最多重试 9 次
 - 自动故障转移到下一个可用凭据
 - 多凭据格式下 Token 刷新后自动回写到源文件
