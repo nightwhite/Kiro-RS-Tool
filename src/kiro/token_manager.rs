@@ -1227,7 +1227,11 @@ impl MultiTokenManager {
         }
     }
 
-    fn credential_concurrent_limit(&self, credentials: &KiroCredentials) -> u32 {
+    fn credential_concurrent_limit(
+        &self,
+        credentials: &KiroCredentials,
+        default_limit: u32,
+    ) -> u32 {
         if let Some(limit) = credentials.concurrent_limit {
             return limit.max(1);
         }
@@ -1242,7 +1246,7 @@ impl MultiTokenManager {
             }
         }
 
-        self.config().default_concurrency_limit.max(1)
+        default_limit.max(1)
     }
 
     fn try_acquire_concurrency_slot(&self, model: Option<&str>) -> Option<(u64, KiroCredentials)> {
@@ -1252,6 +1256,7 @@ impl MultiTokenManager {
             .map(|m| m.to_lowercase().contains("opus"))
             .unwrap_or(false);
         let mode = self.load_balancing_mode.lock().clone();
+        let default_limit = self.config.read().default_concurrency_limit;
 
         let best_idx = match mode.as_str() {
             "priority_group_balanced" => entries
@@ -1262,20 +1267,23 @@ impl MultiTokenManager {
                         && !e.throttled_until.map(|t| t > now).unwrap_or(false)
                         && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
                         && (!is_opus || e.credentials.supports_opus())
-                        && e.in_flight < self.credential_concurrent_limit(&e.credentials)
+                        && e.in_flight
+                            < self.credential_concurrent_limit(&e.credentials, default_limit)
                 })
                 .min_by(|(_, a), (_, b)| {
-                    let a_limit = self.credential_concurrent_limit(&a.credentials);
-                    let b_limit = self.credential_concurrent_limit(&b.credentials);
+                    let a_limit =
+                        self.credential_concurrent_limit(&a.credentials, default_limit) as u64;
+                    let b_limit =
+                        self.credential_concurrent_limit(&b.credentials, default_limit) as u64;
                     (
                         a.credentials.priority_group,
-                        a.in_flight * b_limit,
+                        a.in_flight as u64 * b_limit,
                         a.success_count,
                         a.credentials.priority,
                     )
                         .cmp(&(
                             b.credentials.priority_group,
-                            b.in_flight * a_limit,
+                            b.in_flight as u64 * a_limit,
                             b.success_count,
                             b.credentials.priority,
                         ))
@@ -1289,7 +1297,8 @@ impl MultiTokenManager {
                         && !e.throttled_until.map(|t| t > now).unwrap_or(false)
                         && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
                         && (!is_opus || e.credentials.supports_opus())
-                        && e.in_flight < self.credential_concurrent_limit(&e.credentials)
+                        && e.in_flight
+                            < self.credential_concurrent_limit(&e.credentials, default_limit)
                 })
                 .min_by_key(|(_, e)| (e.in_flight, e.success_count, e.credentials.priority))
                 .map(|(idx, _)| idx),
@@ -1301,7 +1310,8 @@ impl MultiTokenManager {
                         && !e.throttled_until.map(|t| t > now).unwrap_or(false)
                         && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
                         && (!is_opus || e.credentials.supports_opus())
-                        && e.in_flight < self.credential_concurrent_limit(&e.credentials)
+                        && e.in_flight
+                            < self.credential_concurrent_limit(&e.credentials, default_limit)
                 });
                 current_idx.or_else(|| {
                     entries
@@ -1312,7 +1322,9 @@ impl MultiTokenManager {
                                 && !e.throttled_until.map(|t| t > now).unwrap_or(false)
                                 && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
                                 && (!is_opus || e.credentials.supports_opus())
-                                && e.in_flight < self.credential_concurrent_limit(&e.credentials)
+                                && e.in_flight
+                                    < self
+                                        .credential_concurrent_limit(&e.credentials, default_limit)
                         })
                         .min_by_key(|(_, e)| e.credentials.priority)
                         .map(|(idx, _)| idx)
@@ -2299,6 +2311,7 @@ impl MultiTokenManager {
         let entries = self.entries.lock();
         let current_id = *self.current_id.lock();
         let now = Instant::now();
+        let default_limit = self.config.read().default_concurrency_limit;
         let available = entries
             .iter()
             .filter(|e| {
@@ -2377,7 +2390,8 @@ impl MultiTokenManager {
                     rate_limited_until_ms: cooldown_remaining_ms(e.rate_limited_until),
                     endpoint: e.credentials.endpoint.clone(),
                     in_flight: e.in_flight,
-                    concurrent_limit: self.credential_concurrent_limit(&e.credentials),
+                    concurrent_limit: self
+                        .credential_concurrent_limit(&e.credentials, default_limit),
                     configured_concurrent_limit: e.credentials.concurrent_limit,
                 })
                 .collect(),
@@ -4076,6 +4090,37 @@ mod tests {
 
         assert_eq!(first.id, 1);
         assert_eq!(second.id, 2);
+    }
+
+    #[tokio::test]
+    async fn test_priority_group_balanced_handles_large_concurrency_limits() {
+        let mut config = Config::default();
+        config.load_balancing_mode = "priority_group_balanced".to_string();
+
+        let mut a = KiroCredentials::default();
+        a.access_token = Some("a".to_string());
+        a.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        a.priority_group = 0;
+        a.concurrent_limit = Some(u32::MAX);
+
+        let mut b = KiroCredentials::default();
+        b.access_token = Some("b".to_string());
+        b.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        b.priority_group = 0;
+        b.concurrent_limit = Some(u32::MAX);
+
+        let manager =
+            Arc::new(MultiTokenManager::new(config, vec![a, b], None, None, false).unwrap());
+
+        let first = manager.acquire_call(None).await.unwrap();
+        let second = manager.acquire_call(None).await.unwrap();
+        let third = manager.acquire_call(None).await.unwrap();
+        let fourth = manager.acquire_call(None).await.unwrap();
+
+        assert_eq!(first.id, 1);
+        assert_eq!(second.id, 2);
+        assert_eq!(third.id, 1);
+        assert_eq!(fourth.id, 2);
     }
 
     #[tokio::test]
