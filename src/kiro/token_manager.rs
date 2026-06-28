@@ -1308,34 +1308,19 @@ impl MultiTokenManager {
                 })
                 .min_by_key(|(_, e)| (e.in_flight, e.success_count, e.credentials.priority))
                 .map(|(idx, _)| idx),
-            _ => {
-                let current_id = *self.current_id.lock();
-                let current_idx = entries.iter().position(|e| {
-                    e.id == current_id
-                        && !e.disabled
+            _ => entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    !e.disabled
                         && !e.throttled_until.map(|t| t > now).unwrap_or(false)
                         && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
                         && (!is_opus || e.credentials.supports_opus())
                         && e.in_flight
                             < self.credential_concurrent_limit(&e.credentials, default_limit)
-                });
-                current_idx.or_else(|| {
-                    entries
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, e)| {
-                            !e.disabled
-                                && !e.throttled_until.map(|t| t > now).unwrap_or(false)
-                                && !e.rate_limited_until.map(|t| t > now).unwrap_or(false)
-                                && (!is_opus || e.credentials.supports_opus())
-                                && e.in_flight
-                                    < self
-                                        .credential_concurrent_limit(&e.credentials, default_limit)
-                        })
-                        .min_by_key(|(_, e)| e.credentials.priority)
-                        .map(|(idx, _)| idx)
                 })
-            }
+                .min_by_key(|(_, e)| e.credentials.priority)
+                .map(|(idx, _)| idx),
         }?;
 
         let entry = &mut entries[best_idx];
@@ -4042,6 +4027,37 @@ mod tests {
 
         let second = manager.acquire_call(None).await.unwrap();
         assert_eq!(second.id, 1);
+    }
+
+    #[tokio::test]
+    async fn test_priority_mode_returns_to_highest_priority_after_release() {
+        let mut config = Config::default();
+        config.load_balancing_mode = "priority".to_string();
+
+        let mut high = KiroCredentials::default();
+        high.access_token = Some("high".to_string());
+        high.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        high.priority = 0;
+        high.concurrent_limit = Some(1);
+
+        let mut low = KiroCredentials::default();
+        low.access_token = Some("low".to_string());
+        low.expires_at = Some((Utc::now() + Duration::hours(1)).to_rfc3339());
+        low.priority = 1;
+        low.concurrent_limit = Some(2);
+
+        let manager =
+            Arc::new(MultiTokenManager::new(config, vec![high, low], None, None, false).unwrap());
+
+        let first = manager.acquire_call(None).await.unwrap();
+        let second = manager.acquire_call(None).await.unwrap();
+        assert_eq!(first.id, 1);
+        assert_eq!(second.id, 2);
+
+        drop(first);
+
+        let third = manager.acquire_call(None).await.unwrap();
+        assert_eq!(third.id, 1);
     }
 
     #[tokio::test]
