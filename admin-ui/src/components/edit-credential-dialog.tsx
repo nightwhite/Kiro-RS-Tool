@@ -30,6 +30,10 @@ export function EditCredentialDialog({
   const [proxyUrl, setProxyUrl] = useState(credential.proxyUrl ?? '')
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
+  const [concurrentLimit, setConcurrentLimit] = useState(
+    credential.configuredConcurrentLimit ? String(credential.configuredConcurrentLimit) : ''
+  )
+  const [priorityGroup, setPriorityGroup] = useState(String(credential.priorityGroup ?? 0))
   const [manualMode, setManualMode] = useState(false)
 
   const { data: proxyPool } = useQuery({
@@ -45,6 +49,10 @@ export function EditCredentialDialog({
       setProxyUrl(credential.proxyUrl ?? '')
       setProxyUsername('')
       setProxyPassword('')
+      setConcurrentLimit(
+        credential.configuredConcurrentLimit ? String(credential.configuredConcurrentLimit) : ''
+      )
+      setPriorityGroup(String(credential.priorityGroup ?? 0))
       setManualMode(false)
     }
   }, [open, credential])
@@ -53,6 +61,17 @@ export function EditCredentialDialog({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    const parsedConcurrentLimit =
+      concurrentLimit.trim() === '' ? 0 : Number(concurrentLimit)
+    if (!Number.isInteger(parsedConcurrentLimit) || parsedConcurrentLimit < 0) {
+      toast.error('并发上限必须是正整数，或留空使用自动上限')
+      return
+    }
+    const parsedPriorityGroup = Number(priorityGroup)
+    if (!Number.isInteger(parsedPriorityGroup) || parsedPriorityGroup < 0) {
+      toast.error('优先组必须是 0 或正整数')
+      return
+    }
 
     mutate(
       {
@@ -62,6 +81,8 @@ export function EditCredentialDialog({
           proxyUrl: proxyUrl,
           proxyUsername: proxyUsername || undefined,
           proxyPassword: proxyPassword || undefined,
+          concurrentLimit: parsedConcurrentLimit,
+          priorityGroup: parsedPriorityGroup,
         },
       },
       {
@@ -181,6 +202,41 @@ export function EditCredentialDialog({
               </div>
               <p className="text-xs text-muted-foreground">
                 用户名/密码留空表示不修改；代理 URL 已包含凭据时无需填写
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="concurrentLimit" className="text-sm font-medium">
+                并发上限
+              </label>
+              <Input
+                id="concurrentLimit"
+                type="number"
+                min="1"
+                placeholder={`自动（当前 ${credential.concurrentLimit}）`}
+                value={concurrentLimit}
+                onChange={(e) => setConcurrentLimit(e.target.value)}
+                disabled={isPending}
+              />
+              <p className="text-xs text-muted-foreground">
+                留空使用自动上限；Pro/Pro+ 通常较低，Power 可承载更高并发
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <label htmlFor="priorityGroup" className="text-sm font-medium">
+                优先组
+              </label>
+              <Input
+                id="priorityGroup"
+                type="number"
+                min="0"
+                value={priorityGroup}
+                onChange={(e) => setPriorityGroup(e.target.value)}
+                disabled={isPending}
+              />
+              <p className="text-xs text-muted-foreground">
+                数字越小越先使用；同一优先组会按实时并发分摊
               </p>
             </div>
           </div>

@@ -267,6 +267,10 @@ pub struct Config {
     #[serde(default = "default_load_balancing_mode")]
     pub load_balancing_mode: String,
 
+    /// 凭据默认并发上限；单个凭据未配置且无法从订阅等级推断时使用。
+    #[serde(default = "default_concurrency_limit")]
+    pub default_concurrency_limit: u32,
+
     /// 普通 429 重试策略模式。
     #[serde(default = "default_retry_mode")]
     pub retry_mode: RetryMode,
@@ -367,6 +371,10 @@ fn default_load_balancing_mode() -> String {
     "priority".to_string()
 }
 
+fn default_concurrency_limit() -> u32 {
+    3
+}
+
 fn default_retry_mode() -> RetryMode {
     RetryMode::default()
 }
@@ -434,6 +442,7 @@ impl Default for Config {
             update_auto_apply: false,
             update_auto_apply_time: default_update_auto_apply_time(),
             load_balancing_mode: default_load_balancing_mode(),
+            default_concurrency_limit: default_concurrency_limit(),
             retry_mode: default_retry_mode(),
             retry_policy: None,
             account_throttle_failover: default_account_throttle_failover(),

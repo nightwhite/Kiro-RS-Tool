@@ -90,6 +90,7 @@ import {
 } from "@/hooks/use-credentials";
 import { useUpdateCheck } from "@/hooks/use-update-check";
 import { useFailureStats } from "@/hooks/use-traces";
+import type { LoadBalancingMode } from "@/api/credentials";
 import { useRectSelect } from "@/hooks/use-rect-select";
 import {
   DndContext,
@@ -1070,12 +1071,20 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
 
   const handleToggleLoadBalancing = () => {
     const cur = loadBalancingData?.mode || "priority";
-    const next = cur === "priority" ? "balanced" : "priority";
+    const next: LoadBalancingMode =
+      cur === "priority"
+        ? "balanced"
+        : cur === "balanced"
+          ? "priority_group_balanced"
+          : "priority";
+    const label =
+      next === "priority"
+        ? "优先级模式"
+        : next === "balanced"
+          ? "均衡负载模式"
+          : "分层均衡模式";
     setLoadBalancingMode(next, {
-      onSuccess: () =>
-        toast.success(
-          `已切换到${next === "priority" ? "优先级模式" : "均衡负载模式"}`,
-        ),
+      onSuccess: () => toast.success(`已切换到${label}`),
       onError: (err) => toast.error(`切换失败: ${extractErrorMessage(err)}`),
     });
   };
@@ -1140,7 +1149,9 @@ export function Dashboard({ onLogout, embedded = false }: DashboardProps) {
                   ? "加载中…"
                   : loadBalancingData?.mode === "priority"
                     ? "优先级"
-                    : "均衡负载"}
+                    : loadBalancingData?.mode === "balanced"
+                      ? "均衡负载"
+                      : "分层均衡"}
               </Button>
               <Button variant="ghost" size="icon" asChild title="GitHub 仓库">
                 <a

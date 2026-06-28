@@ -16,7 +16,7 @@ use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::endpoint::{KiroEndpoint, RequestContext};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
-use crate::kiro::token_manager::MultiTokenManager;
+use crate::kiro::token_manager::{CallPermit, ConcurrencyLimitExceededError, MultiTokenManager};
 use crate::model::config::{RetryPolicy, TlsBackend};
 use parking_lot::{Mutex, RwLock};
 
@@ -79,6 +79,7 @@ impl ClientCache {
 pub struct KiroCallResult {
     pub response: reqwest::Response,
     pub credential_id: u64,
+    pub permit: CallPermit,
 }
 
 /// Kiro API Provider
@@ -420,9 +421,22 @@ impl KiroProvider {
         for attempt in 0..max_retries {
             let attempt_start = Instant::now();
             // 获取调用上下文（绑定 index、credentials、token）
-            let ctx = match self.token_manager.acquire_context(model.as_deref()).await {
+            let ctx = match self.token_manager.acquire_call(model.as_deref()).await {
                 Ok(c) => c,
                 Err(e) => {
+                    if e.downcast_ref::<ConcurrencyLimitExceededError>().is_some() {
+                        Self::emit_attempt(
+                            sink,
+                            attempt,
+                            0,
+                            "",
+                            None,
+                            outcome::UNKNOWN,
+                            Some(&e.to_string()),
+                            attempt_start,
+                        );
+                        return Err(e);
+                    }
                     Self::emit_attempt(
                         sink,
                         attempt,
@@ -552,6 +566,7 @@ impl KiroProvider {
                 return Ok(KiroCallResult {
                     response,
                     credential_id: ctx.id,
+                    permit: ctx.permit,
                 });
             }
 

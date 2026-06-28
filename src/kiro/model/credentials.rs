@@ -90,6 +90,11 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "is_zero")]
     pub priority: u32,
 
+    /// 优先组（数字越小越先使用，默认为 0）
+    #[serde(default)]
+    #[serde(skip_serializing_if = "is_zero")]
+    pub priority_group: u32,
+
     /// 凭据级 Region 配置（用于 OIDC token 刷新）
     /// 未配置时回退到 config.json 的全局 region
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +153,11 @@ pub struct KiroCredentials {
     /// 端点名必须在启动时注册的端点 registry 中存在。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+
+    /// 凭据级并发上限（可选）；未配置时根据订阅等级或全局默认值计算。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub concurrent_limit: Option<u32>,
 }
 
 /// 判断是否为零（用于跳过序列化）
@@ -179,6 +189,7 @@ impl std::fmt::Debug for KiroCredentials {
             .field("client_secret", &fmt_redacted(&self.client_secret))
             .field("start_url", &self.start_url)
             .field("priority", &self.priority)
+            .field("priority_group", &self.priority_group)
             .field("region", &self.region)
             .field("auth_region", &self.auth_region)
             .field("api_region", &self.api_region)
@@ -191,6 +202,7 @@ impl std::fmt::Debug for KiroCredentials {
             .field("disabled", &self.disabled)
             .field("kiro_api_key", &fmt_redacted(&self.kiro_api_key))
             .field("endpoint", &self.endpoint)
+            .field("concurrent_limit", &self.concurrent_limit)
             .finish()
     }
 }
@@ -544,6 +556,7 @@ mod tests {
             client_secret: None,
             start_url: None,
             priority: 0,
+            priority_group: 0,
             region: None,
             auth_region: None,
             api_region: None,
@@ -556,6 +569,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            concurrent_limit: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -738,6 +752,19 @@ mod tests {
     }
 
     #[test]
+    fn test_priority_group_default_and_explicit() {
+        let default_creds = KiroCredentials::from_json(r#"{"refreshToken":"t"}"#).unwrap();
+        assert_eq!(default_creds.priority_group, 0);
+
+        let explicit =
+            KiroCredentials::from_json(r#"{"refreshToken":"t","priorityGroup":2}"#).unwrap();
+        assert_eq!(explicit.priority_group, 2);
+
+        let json = default_creds.to_pretty_json().unwrap();
+        assert!(!json.contains("priorityGroup"));
+    }
+
+    #[test]
     fn test_credentials_config_single() {
         let json = r#"{"refreshToken": "test", "expiresAt": "2025-12-31T00:00:00Z"}"#;
         let config: CredentialsConfig = serde_json::from_str(json).unwrap();
@@ -813,6 +840,7 @@ mod tests {
             client_secret: None,
             start_url: None,
             priority: 0,
+            priority_group: 0,
             region: Some("eu-west-1".to_string()),
             auth_region: None,
             api_region: None,
@@ -825,6 +853,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            concurrent_limit: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -846,6 +875,7 @@ mod tests {
             client_secret: None,
             start_url: None,
             priority: 0,
+            priority_group: 0,
             region: None,
             auth_region: None,
             api_region: None,
@@ -858,6 +888,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            concurrent_limit: None,
         };
 
         let json = creds.to_pretty_json().unwrap();
@@ -962,6 +993,7 @@ mod tests {
             client_secret: None,
             start_url: None,
             priority: 3,
+            priority_group: 0,
             region: Some("us-west-2".to_string()),
             auth_region: None,
             api_region: None,
@@ -974,6 +1006,7 @@ mod tests {
             disabled: false,
             kiro_api_key: None,
             endpoint: None,
+            concurrent_limit: None,
         };
 
         let json = original.to_pretty_json().unwrap();
