@@ -168,6 +168,73 @@ impl RetryPolicy {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_tool_result_max_chars() -> usize {
+    8_000
+}
+
+fn default_tool_result_head_lines() -> usize {
+    80
+}
+
+fn default_tool_result_tail_lines() -> usize {
+    40
+}
+
+fn default_tool_use_input_max_chars() -> usize {
+    6_000
+}
+
+fn default_tool_definition_max_bytes() -> usize {
+    20 * 1024
+}
+
+/// 请求压缩配置。
+///
+/// 第一版只启用低风险瘦身项：空白压缩、tool_result 文本截断、
+/// 历史 tool_use.input 大字符串截断、工具定义 schema/description 压缩。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompressionConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    #[serde(default = "default_true")]
+    pub whitespace_compression: bool,
+
+    #[serde(default = "default_tool_result_max_chars")]
+    pub tool_result_max_chars: usize,
+
+    #[serde(default = "default_tool_result_head_lines")]
+    pub tool_result_head_lines: usize,
+
+    #[serde(default = "default_tool_result_tail_lines")]
+    pub tool_result_tail_lines: usize,
+
+    #[serde(default = "default_tool_use_input_max_chars")]
+    pub tool_use_input_max_chars: usize,
+
+    #[serde(default = "default_tool_definition_max_bytes")]
+    pub tool_definition_max_bytes: usize,
+}
+
+impl Default for CompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            whitespace_compression: default_true(),
+            tool_result_max_chars: default_tool_result_max_chars(),
+            tool_result_head_lines: default_tool_result_head_lines(),
+            tool_result_tail_lines: default_tool_result_tail_lines(),
+            tool_use_input_max_chars: default_tool_use_input_max_chars(),
+            tool_definition_max_bytes: default_tool_definition_max_bytes(),
+        }
+    }
+}
+
 /// KNA 应用配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,6 +374,10 @@ pub struct Config {
     /// "raw" 保留旧行为，直接透传客户端工具 schema，用于排障。
     #[serde(default = "default_tool_compatibility_mode")]
     pub tool_compatibility_mode: ToolCompatibilityMode,
+
+    /// 请求压缩配置。第一版只包含低风险压缩，不做 history 截断或 thinking 丢弃。
+    #[serde(default)]
+    pub compression: CompressionConfig,
 
     /// 是否启用请求链路追踪（写 traces.db）。默认 true。
     ///
@@ -450,6 +521,7 @@ impl Default for Config {
             extract_thinking: default_extract_thinking(),
             default_endpoint: default_endpoint(),
             tool_compatibility_mode: default_tool_compatibility_mode(),
+            compression: CompressionConfig::default(),
             trace_enabled: default_trace_enabled(),
             trace_retention_days: default_trace_retention_days(),
             usage_log_retention_days: default_usage_log_retention_days(),

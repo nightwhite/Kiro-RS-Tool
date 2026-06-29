@@ -16,7 +16,7 @@ use crate::admin::trace_db::SharedTraceStore;
 use crate::admin::usage_stats::{SharedAggregator, SharedRecorder};
 use crate::common::auth;
 use crate::kiro::provider::KiroProvider;
-use crate::model::config::ToolCompatibilityMode;
+use crate::model::config::{CompressionConfig, ToolCompatibilityMode};
 
 use super::cache_metering::SharedCacheMeter;
 use super::types::ErrorResponse;
@@ -40,6 +40,8 @@ pub struct AppState {
     pub extract_thinking: bool,
     /// 工具兼容模式
     pub tool_compatibility_mode: ToolCompatibilityMode,
+    /// 请求压缩配置
+    pub compression_config: Arc<RwLock<CompressionConfig>>,
     /// 客户端 Key 管理器（可选，未启用 Admin 时为 None）
     pub client_keys: Option<SharedClientKeyManager>,
     /// 用量日志记录器
@@ -68,6 +70,7 @@ impl AppState {
             kiro_provider: None,
             extract_thinking,
             tool_compatibility_mode,
+            compression_config: Arc::new(RwLock::new(CompressionConfig::default())),
             client_keys: None,
             usage_recorder: None,
             usage_aggregator: None,
@@ -87,6 +90,7 @@ impl AppState {
             kiro_provider: None,
             extract_thinking,
             tool_compatibility_mode,
+            compression_config: Arc::new(RwLock::new(CompressionConfig::default())),
             client_keys: None,
             usage_recorder: None,
             usage_aggregator: None,
@@ -117,6 +121,12 @@ impl AppState {
     /// 注入 CacheMeter
     pub fn with_cache_meter(mut self, cache: Option<SharedCacheMeter>) -> Self {
         self.cache_meter = cache;
+        self
+    }
+
+    /// 注入请求压缩配置
+    pub fn with_compression_config(mut self, config: Arc<RwLock<CompressionConfig>>) -> Self {
+        self.compression_config = config;
         self
     }
 

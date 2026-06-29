@@ -14,7 +14,7 @@ use crate::admin::client_keys::SharedClientKeyManager;
 use crate::admin::trace_db::SharedTraceStore;
 use crate::admin::usage_stats::{SharedAggregator, SharedRecorder};
 use crate::kiro::provider::KiroProvider;
-use crate::model::config::ToolCompatibilityMode;
+use crate::model::config::{CompressionConfig, ToolCompatibilityMode};
 
 use super::{
     cache_metering::SharedCacheMeter,
@@ -47,6 +47,7 @@ pub fn create_router_with_provider(
         None,
         None,
         None,
+        Arc::new(RwLock::new(CompressionConfig::default())),
     )
 }
 
@@ -63,6 +64,7 @@ pub fn create_router_with_shared_key(
     usage_aggregator: Option<SharedAggregator>,
     cache_meter: Option<SharedCacheMeter>,
     trace_store: Option<SharedTraceStore>,
+    compression_config: Arc<RwLock<CompressionConfig>>,
 ) -> Router {
     let mut state =
         AppState::with_shared_api_key(api_key, extract_thinking, tool_compatibility_mode);
@@ -72,6 +74,7 @@ pub fn create_router_with_shared_key(
     state = state.with_usage(client_keys, usage_recorder, usage_aggregator);
     state = state.with_cache_meter(cache_meter);
     state = state.with_trace_store(trace_store);
+    state = state.with_compression_config(compression_config);
 
     // 需要认证的 /v1 路由
     let v1_routes = Router::new()
