@@ -28,7 +28,7 @@ use std::time::Duration;
 use tokio::time::interval;
 use uuid::Uuid;
 
-use super::cache_metering::CacheUsagePlan;
+use super::cache_metering::{CacheUsagePlan, SharedCacheMeter};
 use super::converter::{ConversionError, ConversionResult, convert_request_with_mode};
 use super::middleware::{AppState, KeyContext};
 use super::stream::{BufferedStreamContext, SseEvent, StreamContext, ToolJsonAccumulator};
@@ -640,19 +640,13 @@ pub async fn post_messages(
     override_thinking_from_model_name(&mut payload);
     normalize_web_search_tool(&mut payload);
 
-    // CacheMeter 必须在 WebSearch 分流前计算；Claude Code 常驻 WebSearch 工具时
-    // 会进入 agentic loop，同样需要向客户端上报 cache usage。
     let total_input_tokens = token::count_all_tokens(
         payload.model.clone(),
         payload.system.clone(),
         payload.messages.clone(),
         payload.tools.clone(),
     ) as i32;
-    let cache_plan = state
-        .cache_meter
-        .as_ref()
-        .map(|cache| super::cache_metering::compute_cache_usage(cache, &payload, key_ctx.key_id))
-        .unwrap_or_default();
+    let cache_meter = state.cache_meter.clone();
 
     let payload_stream = payload.stream;
 
@@ -669,7 +663,7 @@ pub async fn post_messages(
         ));
 
         let (input_tokens, cache_creation_tokens, cache_read_tokens) =
-            cache_plan.split_against_total(total_input_tokens);
+            CacheUsagePlan::default().split_against_total(total_input_tokens);
 
         let resp = websearch::handle_websearch_request(
             provider,
@@ -685,9 +679,6 @@ pub async fn post_messages(
         } else {
             "error"
         };
-        if status == "success" {
-            cache_plan.commit_success();
-        }
         tracer.set_usage(input_tokens, 0, cache_creation_tokens, cache_read_tokens);
         tracer.finalize(status, None, None, None);
         hook.record(
@@ -720,7 +711,7 @@ pub async fn post_messages(
             hook,
             payload_stream,
             state.tool_compatibility_mode,
-            cache_plan,
+            cache_meter.clone(),
             tracer,
         )
         .await;
@@ -798,7 +789,8 @@ pub async fn post_messages(
             thinking_enabled,
             tool_name_map,
             hook,
-            cache_plan,
+            cache_meter.clone(),
+            payload.clone(),
             tracer,
         )
         .await
@@ -819,7 +811,8 @@ pub async fn post_messages(
             extract_thinking,
             tool_name_map,
             hook,
-            cache_plan,
+            cache_meter.clone(),
+            payload.clone(),
             tracer,
         )
         .await
@@ -835,7 +828,8 @@ async fn handle_stream_request(
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     hook: UsageRecordHook,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
+    cache_payload: MessagesRequest,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
     let stream = create_deferred_sse_stream(
@@ -846,7 +840,8 @@ async fn handle_stream_request(
         thinking_enabled,
         tool_name_map,
         hook,
-        cache_plan,
+        cache_meter,
+        cache_payload,
         tracer,
     );
 
@@ -893,7 +888,8 @@ fn create_deferred_sse_stream(
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     hook: UsageRecordHook,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
+    cache_payload: MessagesRequest,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> ByteStream {
     // CCH records TTFB when the first downstream byte arrives. Do not emit a
@@ -923,6 +919,12 @@ fn create_deferred_sse_stream(
         let response = call_result.response;
         let credential_id = call_result.credential_id;
         let permit = call_result.permit;
+        let cache_plan = cache_meter
+            .as_ref()
+            .map(|cache| {
+                super::cache_metering::compute_cache_usage(cache, &cache_payload, credential_id)
+            })
+            .unwrap_or_default();
 
         let mut ctx =
             StreamContext::new_with_thinking(model, input_tokens, thinking_enabled, tool_name_map);
@@ -1105,7 +1107,8 @@ async fn handle_non_stream_request(
     thinking_enabled: bool,
     tool_name_map: std::collections::HashMap<String, String>,
     hook: UsageRecordHook,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
+    cache_payload: MessagesRequest,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
     // 调用 Kiro API（支持多凭据故障转移）
@@ -1125,6 +1128,12 @@ async fn handle_non_stream_request(
     let response = call_result.response;
     let credential_id = call_result.credential_id;
     let permit = call_result.permit;
+    let cache_plan = cache_meter
+        .as_ref()
+        .map(|cache| {
+            super::cache_metering::compute_cache_usage(cache, &cache_payload, credential_id)
+        })
+        .unwrap_or_default();
 
     // 读取响应体
     let body_bytes = match response.bytes().await {
@@ -1358,8 +1367,13 @@ async fn handle_non_stream_request(
 
     // 全量 prompt token：contextUsage 真实值优先，否则用客户端估算。
     let total_input_tokens = resolve_usage_input_tokens(input_tokens, context_input_tokens);
-    let (final_input_tokens, cache_creation_tokens, cache_read_tokens) =
-        cache_plan.split_against_total(total_input_tokens);
+    let (
+        final_input_tokens,
+        cache_creation_tokens,
+        cache_read_tokens,
+        cache_creation_5m_tokens,
+        cache_creation_1h_tokens,
+    ) = cache_plan.split_with_ttl_breakdown(total_input_tokens);
 
     // 构建 Anthropic 响应
     let response_body = json!({
@@ -1374,7 +1388,11 @@ async fn handle_non_stream_request(
             "input_tokens": final_input_tokens,
             "output_tokens": output_tokens,
             "cache_creation_input_tokens": cache_creation_tokens,
-            "cache_read_input_tokens": cache_read_tokens
+            "cache_read_input_tokens": cache_read_tokens,
+            "cache_creation": {
+                "ephemeral_5m_input_tokens": cache_creation_5m_tokens,
+                "ephemeral_1h_input_tokens": cache_creation_1h_tokens
+            }
         }
     });
 
@@ -1544,19 +1562,13 @@ pub async fn post_messages_cc(
     override_thinking_from_model_name(&mut payload);
     normalize_web_search_tool(&mut payload);
 
-    // CacheMeter 必须在 WebSearch 分流前计算；/cc/v1/messages 常驻工具列表
-    // 包含 WebSearch 时会进入 agentic loop，不能丢 cache usage。
     let total_input_tokens = token::count_all_tokens(
         payload.model.clone(),
         payload.system.clone(),
         payload.messages.clone(),
         payload.tools.clone(),
     ) as i32;
-    let cache_plan = state
-        .cache_meter
-        .as_ref()
-        .map(|cache| super::cache_metering::compute_cache_usage(cache, &payload, key_ctx.key_id))
-        .unwrap_or_default();
+    let cache_meter = state.cache_meter.clone();
 
     let payload_stream = payload.stream;
 
@@ -1573,7 +1585,7 @@ pub async fn post_messages_cc(
         ));
 
         let (input_tokens, cache_creation_tokens, cache_read_tokens) =
-            cache_plan.split_against_total(total_input_tokens);
+            CacheUsagePlan::default().split_against_total(total_input_tokens);
 
         let resp = websearch::handle_websearch_request(
             provider,
@@ -1588,9 +1600,6 @@ pub async fn post_messages_cc(
         } else {
             "error"
         };
-        if status == "success" {
-            cache_plan.commit_success();
-        }
         tracer.set_usage(input_tokens, 0, cache_creation_tokens, cache_read_tokens);
         tracer.finalize(status, None, None, None);
         hook.record(
@@ -1623,7 +1632,7 @@ pub async fn post_messages_cc(
             hook,
             payload_stream,
             state.tool_compatibility_mode,
-            cache_plan,
+            cache_meter.clone(),
             tracer,
         )
         .await;
@@ -1701,7 +1710,8 @@ pub async fn post_messages_cc(
             tool_name_map,
             hook,
             total_input_tokens,
-            cache_plan,
+            cache_meter.clone(),
+            payload.clone(),
             tracer,
         )
         .await
@@ -1722,7 +1732,8 @@ pub async fn post_messages_cc(
             extract_thinking,
             tool_name_map,
             hook,
-            cache_plan,
+            cache_meter.clone(),
+            payload.clone(),
             tracer,
         )
         .await
@@ -1741,7 +1752,8 @@ async fn handle_stream_request_buffered(
     tool_name_map: std::collections::HashMap<String, String>,
     hook: UsageRecordHook,
     fallback_input_tokens: i32,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
+    cache_payload: MessagesRequest,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
     let stream = create_deferred_buffered_sse_stream(
@@ -1752,7 +1764,8 @@ async fn handle_stream_request_buffered(
         tool_name_map,
         hook,
         fallback_input_tokens,
-        cache_plan,
+        cache_meter,
+        cache_payload,
         tracer,
     );
 
@@ -1775,7 +1788,8 @@ fn create_deferred_buffered_sse_stream(
     tool_name_map: std::collections::HashMap<String, String>,
     hook: UsageRecordHook,
     fallback_input_tokens: i32,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
+    cache_payload: MessagesRequest,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> ByteStream {
     // Buffered `/cc` streams also avoid pre-upstream placeholder bytes. A ping is
@@ -1804,6 +1818,12 @@ fn create_deferred_buffered_sse_stream(
         let response = call_result.response;
         let credential_id = call_result.credential_id;
         let permit = call_result.permit;
+        let cache_plan = cache_meter
+            .as_ref()
+            .map(|cache| {
+                super::cache_metering::compute_cache_usage(cache, &cache_payload, credential_id)
+            })
+            .unwrap_or_default();
 
         let mut ctx = BufferedStreamContext::new(
             model,
