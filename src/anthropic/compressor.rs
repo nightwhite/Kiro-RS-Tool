@@ -64,16 +64,12 @@ pub(crate) fn compress_kiro_request(
             .user_input_message_context
             .tools;
         if !tools.is_empty() {
-            let before = serde_json::to_string(tools)
-                .map(|value| value.len())
-                .unwrap_or(0);
+            let before = super::tool_compression::estimate_tools_size(tools);
             *tools = super::tool_compression::compress_tools_if_needed(
                 tools,
                 config.tool_definition_max_bytes,
             );
-            let after = serde_json::to_string(tools)
-                .map(|value| value.len())
-                .unwrap_or(before);
+            let after = super::tool_compression::estimate_tools_size(tools);
             stats.tool_definition_saved = before.saturating_sub(after);
         }
     }
@@ -109,7 +105,7 @@ fn compress_whitespace(text: &str) -> String {
 }
 
 fn compress_string_field(field: &mut String) -> usize {
-    if field == " " {
+    if field.trim().is_empty() {
         return 0;
     }
 
@@ -174,10 +170,11 @@ fn smart_truncate_by_lines(
 
     let lines: Vec<&str> = text.lines().collect();
     let total_lines = lines.len();
-    let result = if total_lines > head_lines + tail_lines && head_lines + tail_lines > 0 {
+    let sum_lines = head_lines.saturating_add(tail_lines);
+    let result = if total_lines > sum_lines && sum_lines > 0 {
         let head_part = lines[..head_lines].join("\n");
         let tail_part = lines[total_lines - tail_lines..].join("\n");
-        let omitted_lines = total_lines - head_lines - tail_lines;
+        let omitted_lines = total_lines.saturating_sub(sum_lines);
         let omitted_chars =
             char_count.saturating_sub(head_part.chars().count() + tail_part.chars().count());
         let marked = format!(
@@ -429,6 +426,26 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_compression_does_not_turn_blank_message_into_empty_string() {
+        let mut state = ConversationState::new("conversation").with_current_message(
+            CurrentMessage::new(UserInputMessage::new("   \n\n", "claude-sonnet-4.5")),
+        );
+
+        let stats = super::compress(
+            &mut state,
+            &CompressionConfig {
+                tool_result_max_chars: 0,
+                tool_use_input_max_chars: 0,
+                tool_definition_max_bytes: 0,
+                ..CompressionConfig::default()
+            },
+        );
+
+        assert_eq!(stats.whitespace_saved, 0);
+        assert_eq!(state.current_message.user_input_message.content, "   \n\n");
+    }
+
+    #[test]
     fn compression_does_not_modify_thinking_or_remove_history_turns() {
         let mut state = ConversationState::new("conversation")
             .with_current_message(CurrentMessage::new(UserInputMessage::new(
@@ -499,6 +516,40 @@ mod tests {
         assert!(result_text.chars().count() <= 120);
         assert!(result_text.contains("head"));
         assert!(result_text.contains("tail"));
+    }
+
+    #[test]
+    fn tool_result_line_truncation_does_not_panic_on_extreme_line_config() {
+        let current = UserInputMessage::new("current", "claude-sonnet-4.5").with_context(
+            UserInputMessageContext::new().with_tool_results(vec![ToolResult::success(
+                "toolu_1",
+                format!("{}\n{}", "head".repeat(50), "tail".repeat(50)),
+            )]),
+        );
+
+        let mut state = ConversationState::new("conversation")
+            .with_current_message(CurrentMessage::new(current));
+
+        super::compress(
+            &mut state,
+            &CompressionConfig {
+                tool_result_max_chars: 120,
+                tool_result_head_lines: usize::MAX,
+                tool_result_tail_lines: usize::MAX,
+                ..CompressionConfig::default()
+            },
+        );
+
+        let result_text = state
+            .current_message
+            .user_input_message
+            .user_input_message_context
+            .tool_results[0]
+            .content[0]
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert!(result_text.chars().count() <= 120);
     }
 
     #[test]
