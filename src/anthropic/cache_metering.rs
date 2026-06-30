@@ -269,6 +269,7 @@ impl CacheMeter {
         segment_ttls: &[i64],
     ) {
         debug_assert_eq!(segment_hashes.len(), segment_tokens.len());
+        debug_assert_eq!(segment_hashes.len(), segment_ttls.len());
         let now = now_secs();
         let mut inner = self.inner.lock();
         for ((h, t), ttl_secs) in segment_hashes
@@ -521,7 +522,7 @@ fn minimum_cacheable_tokens_for_model(model: &str) -> u32 {
     let model_lower = model.to_lowercase();
     if model_lower.contains("opus") {
         4096
-    } else if model_lower.contains("haiku-3") || model_lower.contains("haiku_3") {
+    } else if model_lower.contains("haiku") {
         2048
     } else {
         1024
@@ -930,6 +931,14 @@ mod tests {
             second_expires_at, first_expires_at,
             "rewriting an existing prefix must not extend prompt cache ttl"
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn record_with_ttls_rejects_mismatched_ttl_lengths_in_debug() {
+        let cache = CacheMeter::new(None);
+
+        cache.record_with_ttls(&[1, 2], &[10, 20], &[300]);
     }
 
     #[test]
@@ -1832,6 +1841,18 @@ mod tests {
             "Anthropic prompt cache should ignore breakpoints below the model minimum token threshold"
         );
         assert_eq!(usage.cache_read, 0);
+    }
+
+    #[test]
+    fn haiku_models_use_anthropic_2048_prompt_cache_minimum() {
+        assert_eq!(
+            minimum_cacheable_tokens_for_model("claude-3-haiku-20240307"),
+            2048
+        );
+        assert_eq!(
+            minimum_cacheable_tokens_for_model("claude-3-5-haiku-20241022"),
+            2048
+        );
     }
 
     #[test]
