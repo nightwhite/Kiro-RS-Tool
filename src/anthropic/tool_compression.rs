@@ -89,6 +89,7 @@ fn simplify_json_schema(schema: &serde_json::Value) -> serde_json::Value {
     let mut result = serde_json::Map::new();
     for key in [
         "$schema",
+        "$ref",
         "type",
         "required",
         "additionalProperties",
@@ -121,6 +122,16 @@ fn simplify_json_schema(schema: &serde_json::Value) -> serde_json::Value {
                 key.to_string(),
                 serde_json::Value::Array(values.iter().map(simplify_json_schema).collect()),
             );
+        }
+    }
+
+    for key in ["$defs", "definitions"] {
+        if let Some(serde_json::Value::Object(defs)) = obj.get(key) {
+            let mut simplified_defs = serde_json::Map::new();
+            for (name, def_schema) in defs {
+                simplified_defs.insert(name.clone(), simplify_json_schema(def_schema));
+            }
+            result.insert(key.to_string(), serde_json::Value::Object(simplified_defs));
         }
     }
 
@@ -299,6 +310,60 @@ mod tests {
         assert_eq!(json["patternProperties"]["^x-"]["maxLength"], 20);
         assert!(
             json["properties"]["path"]
+                .as_object()
+                .unwrap()
+                .get("description")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn compress_tools_preserves_schema_references() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "target": {
+                    "$ref": "#/$defs/Target",
+                    "description": "referenced target"
+                }
+            },
+            "$defs": {
+                "Target": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "target id"
+                        }
+                    },
+                    "required": ["id"],
+                    "description": "target definition"
+                }
+            },
+            "definitions": {
+                "LegacyTarget": {
+                    "type": "string",
+                    "description": "legacy target"
+                }
+            },
+            "required": ["target"]
+        });
+        let tools: Vec<_> = (0..20)
+            .map(|idx| make_tool(&format!("tool_{idx}"), &"x".repeat(2_000), schema.clone()))
+            .collect();
+
+        let compressed = super::compress_tools_if_needed(&tools, 20 * 1024);
+        let json = &compressed[0].tool_specification.input_schema.json;
+
+        assert_eq!(json["properties"]["target"]["$ref"], "#/$defs/Target");
+        assert_eq!(json["$defs"]["Target"]["type"], "object");
+        assert_eq!(
+            json["$defs"]["Target"]["properties"]["id"]["type"],
+            "string"
+        );
+        assert_eq!(json["definitions"]["LegacyTarget"]["type"], "string");
+        assert!(
+            json["$defs"]["Target"]["properties"]["id"]
                 .as_object()
                 .unwrap()
                 .get("description")

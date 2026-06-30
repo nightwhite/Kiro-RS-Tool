@@ -168,12 +168,13 @@ fn smart_truncate_by_lines(
         return (text.to_string(), 0);
     }
 
-    let lines: Vec<&str> = text.lines().collect();
-    let total_lines = lines.len();
+    let total_lines = text.lines().count();
     let sum_lines = head_lines.saturating_add(tail_lines);
     let result = if total_lines > sum_lines && sum_lines > 0 {
-        let head_part = lines[..head_lines].join("\n");
-        let tail_part = lines[total_lines - tail_lines..].join("\n");
+        let head_part = text.lines().take(head_lines).collect::<Vec<_>>().join("\n");
+        let mut tail_lines = text.lines().rev().take(tail_lines).collect::<Vec<_>>();
+        tail_lines.reverse();
+        let tail_part = tail_lines.join("\n");
         let omitted_lines = total_lines.saturating_sub(sum_lines);
         let omitted_chars =
             char_count.saturating_sub(head_part.chars().count() + tail_part.chars().count());
