@@ -334,6 +334,7 @@ tar -czf kiro-rs-backup-$(date +%F).tar.gz /opt/kiro-rs/data/
 | `defaultConcurrencyLimit` | number | `3` | 单凭据默认并发上限；凭据未配置且无法按订阅推断时使用 |
 | `retryMode` | string | `fast` | 普通 429 重试策略：`turbo` / `fast` / `balanced` / `steady` / `polite` / `custom` |
 | `retryPolicy` | object | - | `retryMode=custom` 时的自定义 429 策略，字段见下方示例 |
+| `compression` | object | 见下方 | 请求发送到 Kiro 上游前的低风险瘦身配置；当前只压缩空白、超长 `tool_result`、历史 `tool_use.input` 大字符串和工具定义，不丢弃 thinking，不截断 history |
 | `extractThinking` | boolean | `true` | 非流式响应的 thinking 块提取。启用后 `<thinking>` 标签会被解析为独立的 `thinking` 内容块 |
 | `defaultEndpoint` | string | `ide` | 默认 Kiro 端点。凭据未显式指定 `endpoint` 时使用。可选值：`ide`（Kiro IDE）、`cli`（Amazon Q for CLI，适用于 `ksk_` 前缀的 API Key） |
 | `toolCompatibilityMode` | string | `claude-code` | 工具兼容模式。`claude-code` 会将 Claude Code 的 `Write` / `Edit` / `Read` / `Bash` 等工具适配为 Kiro 内置工具；`raw` 直接透传工具 schema，仅建议排障时使用 |
@@ -366,6 +367,15 @@ tar -czf kiro-rs-backup-$(date +%F).tar.gz /opt/kiro-rs/data/
    "defaultConcurrencyLimit": 3,
    "retryMode": "fast",
    "retryPolicy": null,
+   "compression": {
+      "enabled": true,
+      "whitespaceCompression": true,
+      "toolResultMaxChars": 8000,
+      "toolResultHeadLines": 80,
+      "toolResultTailLines": 40,
+      "toolUseInputMaxChars": 6000,
+      "toolDefinitionMaxBytes": 20480
+   },
    "extractThinking": true,
    "defaultEndpoint": "ide",
    "toolCompatibilityMode": "claude-code"

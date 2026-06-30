@@ -588,6 +588,28 @@ pub async fn get_models() -> impl IntoResponse {
     })
 }
 
+fn compress_kiro_request_before_send(
+    request: &mut KiroRequest,
+    state: &AppState,
+) -> super::compressor::CompressionStats {
+    let config = state.compression_config.read().clone();
+    if !config.enabled {
+        return super::compressor::CompressionStats::default();
+    }
+
+    let stats = super::compressor::compress_kiro_request(request, &config);
+    if stats.total_saved() > 0 {
+        tracing::debug!(
+            whitespace_saved = stats.whitespace_saved,
+            tool_result_saved = stats.tool_result_saved,
+            tool_use_input_saved = stats.tool_use_input_saved,
+            tool_definition_saved = stats.tool_definition_saved,
+            "已压缩 Kiro 请求体"
+        );
+    }
+    stats
+}
+
 /// POST /v1/messages
 ///
 /// 创建消息（对话）
@@ -705,12 +727,14 @@ pub async fn post_messages(
             payload.model.clone(),
             payload_stream,
         ));
+        let compression_config = state.compression_config.read().clone();
         return super::websearch_loop::run_web_search_loop(
             provider,
             payload,
             hook,
             payload_stream,
             state.tool_compatibility_mode,
+            compression_config,
             cache_meter.clone(),
             tracer,
         )
@@ -737,11 +761,12 @@ pub async fn post_messages(
 
     // Build the Kiro request. profile_arn is injected by the provider layer from the actual
     // credentials; additional_model_request_fields is already filtered by converter model support.
-    let kiro_request = KiroRequest {
+    let mut kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: None,
         additional_model_request_fields: conversion_result.additional_model_request_fields,
     };
+    compress_kiro_request_before_send(&mut kiro_request, &state);
 
     let request_body = match serde_json::to_string(&kiro_request) {
         Ok(body) => body,
@@ -1626,12 +1651,14 @@ pub async fn post_messages_cc(
             payload.model.clone(),
             payload_stream,
         ));
+        let compression_config = state.compression_config.read().clone();
         return super::websearch_loop::run_web_search_loop(
             provider,
             payload,
             hook,
             payload_stream,
             state.tool_compatibility_mode,
+            compression_config,
             cache_meter.clone(),
             tracer,
         )
@@ -1658,11 +1685,12 @@ pub async fn post_messages_cc(
 
     // Build the Kiro request. profile_arn is injected by the provider layer from the actual
     // credentials; additional_model_request_fields is already filtered by converter model support.
-    let kiro_request = KiroRequest {
+    let mut kiro_request = KiroRequest {
         conversation_state: conversion_result.conversation_state,
         profile_arn: None,
         additional_model_request_fields: conversion_result.additional_model_request_fields,
     };
+    compress_kiro_request_before_send(&mut kiro_request, &state);
 
     let request_body = match serde_json::to_string(&kiro_request) {
         Ok(body) => body,

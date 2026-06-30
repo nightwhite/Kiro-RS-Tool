@@ -23,11 +23,13 @@
 //! ```
 
 pub mod cache_metering;
+mod compressor;
 mod converter;
 mod handlers;
 mod middleware;
 mod router;
 pub mod stream;
+mod tool_compression;
 pub mod types;
 mod websearch;
 mod websearch_loop;

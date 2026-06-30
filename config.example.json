@@ -13,6 +13,15 @@
   "defaultConcurrencyLimit": 3,
   "retryMode": "fast",
   "retryPolicy": null,
+  "compression": {
+    "enabled": true,
+    "whitespaceCompression": true,
+    "toolResultMaxChars": 8000,
+    "toolResultHeadLines": 80,
+    "toolResultTailLines": 40,
+    "toolUseInputMaxChars": 6000,
+    "toolDefinitionMaxBytes": 20480
+  },
   "traceEnabled": true,
   "traceRetentionDays": 7,
   "usageLogRetentionDays": 31

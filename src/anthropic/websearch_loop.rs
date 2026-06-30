@@ -25,7 +25,7 @@ use crate::kiro::model::events::Event;
 use crate::kiro::model::requests::kiro::KiroRequest;
 use crate::kiro::parser::decoder::EventStreamDecoder;
 use crate::kiro::provider::KiroProvider;
-use crate::model::config::ToolCompatibilityMode;
+use crate::model::config::{CompressionConfig, ToolCompatibilityMode};
 use crate::token;
 
 use super::cache_metering::{CacheUsagePlan, SharedCacheMeter};
@@ -40,6 +40,23 @@ use super::websearch::{self, WebSearchResults};
 const MAX_WEB_SEARCH_ROUNDS: usize = 5;
 
 type SseBytes = Result<Bytes, Infallible>;
+
+fn compress_kiro_request_before_send(request: &mut KiroRequest, config: &CompressionConfig) {
+    if !config.enabled {
+        return;
+    }
+
+    let stats = super::compressor::compress_kiro_request(request, config);
+    if stats.total_saved() > 0 {
+        tracing::debug!(
+            whitespace_saved = stats.whitespace_saved,
+            tool_result_saved = stats.tool_result_saved,
+            tool_use_input_saved = stats.tool_use_input_saved,
+            tool_definition_saved = stats.tool_definition_saved,
+            "已压缩 web_search loop Kiro 请求体"
+        );
+    }
+}
 
 enum StreamStartup {
     Started,
@@ -295,6 +312,7 @@ async fn run_round(
     hook: &UsageRecordHook,
     fallback_input_tokens: i32,
     tool_compatibility_mode: ToolCompatibilityMode,
+    compression_config: &CompressionConfig,
     first_byte_marker: Option<&mut StreamFirstByteMarker>,
     tracer: &RequestTracer,
 ) -> Result<(RoundOutcome, u64), Response> {
@@ -329,11 +347,12 @@ async fn run_round(
             }
         };
 
-    let kiro_request = KiroRequest {
+    let mut kiro_request = KiroRequest {
         conversation_state: conversion.conversation_state,
         profile_arn: None,
         additional_model_request_fields: conversion.additional_model_request_fields,
     };
+    compress_kiro_request_before_send(&mut kiro_request, compression_config);
     let request_body = match serde_json::to_string(&kiro_request) {
         Ok(b) => b,
         Err(e) => {
@@ -518,6 +537,7 @@ async fn run_web_search_loop_inner(
     mut payload: MessagesRequest,
     hook: UsageRecordHook,
     tool_compatibility_mode: ToolCompatibilityMode,
+    compression_config: CompressionConfig,
     cache_meter: Option<SharedCacheMeter>,
     mut first_byte_marker: Option<&mut StreamFirstByteMarker>,
     tracer: std::sync::Arc<RequestTracer>,
@@ -542,6 +562,7 @@ async fn run_web_search_loop_inner(
             &hook,
             fallback_input_tokens,
             tool_compatibility_mode,
+            &compression_config,
             first_byte_marker.as_deref_mut(),
             tracer.as_ref(),
         )
@@ -696,6 +717,7 @@ pub(super) async fn run_web_search_loop(
     hook: UsageRecordHook,
     stream_client: bool,
     tool_compatibility_mode: ToolCompatibilityMode,
+    compression_config: CompressionConfig,
     cache_meter: Option<SharedCacheMeter>,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
@@ -705,6 +727,7 @@ pub(super) async fn run_web_search_loop(
             payload,
             hook,
             tool_compatibility_mode,
+            compression_config,
             cache_meter,
             tracer,
         )
@@ -716,6 +739,7 @@ pub(super) async fn run_web_search_loop(
         payload,
         hook,
         tool_compatibility_mode,
+        compression_config,
         cache_meter,
         None,
         tracer,
@@ -740,6 +764,7 @@ async fn render_deferred_sse(
     payload: MessagesRequest,
     hook: UsageRecordHook,
     tool_compatibility_mode: ToolCompatibilityMode,
+    compression_config: CompressionConfig,
     cache_meter: Option<SharedCacheMeter>,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
@@ -753,6 +778,7 @@ async fn render_deferred_sse(
             payload,
             hook,
             tool_compatibility_mode,
+            compression_config,
             cache_meter,
             Some(&mut marker),
             tracer,

@@ -259,6 +259,8 @@ async fn main() {
     // 构建 Anthropic API 路由（profile_arn 由 provider 层根据实际凭据动态注入）
     // 把 api_key 包成 Arc<RwLock<...>>，以便 Admin 模块运行时改 key 后立刻生效
     let shared_api_key = std::sync::Arc::new(parking_lot::RwLock::new(api_key.clone()));
+    let compression_config =
+        std::sync::Arc::new(parking_lot::RwLock::new(config.compression.clone()));
 
     // CacheMeter：模拟 Anthropic 缓存、计量 cache_read/creation token 的进程内组件。
     // 持久化到 cache_dir/cache_metering.json，启动时自动加载未过期条目。
@@ -277,6 +279,7 @@ async fn main() {
         Some(usage_aggregator.clone()),
         Some(cache_meter.clone()),
         trace_store.clone(),
+        compression_config.clone(),
     );
 
     // 构建 Admin API 路由（如果配置了非空的 admin_api_key）
