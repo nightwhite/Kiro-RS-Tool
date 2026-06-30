@@ -2,6 +2,19 @@ use crate::kiro::model::requests::tool::{InputSchema, Tool, ToolSpecification};
 
 const MIN_DESCRIPTION_CHARS: usize = 50;
 
+struct CountingWriter(usize);
+
+impl std::io::Write for CountingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub fn compress_tools_if_needed(tools: &[Tool], max_bytes: usize) -> Vec<Tool> {
     if max_bytes == 0 {
         return tools.to_vec();
@@ -47,11 +60,11 @@ pub(crate) fn estimate_tools_size(tools: &[Tool]) -> usize {
         .iter()
         .map(|tool| {
             let spec = &tool.tool_specification;
-            spec.name.len()
-                + spec.description.len()
-                + serde_json::to_string(&spec.input_schema.json)
-                    .map(|value| value.len())
-                    .unwrap_or(0)
+            let mut writer = CountingWriter(0);
+            let schema_len = serde_json::to_writer(&mut writer, &spec.input_schema.json)
+                .map(|_| writer.0)
+                .unwrap_or(0);
+            spec.name.len() + spec.description.len() + schema_len
         })
         .sum()
 }
@@ -82,6 +95,7 @@ fn simplify_json_schema(schema: &serde_json::Value) -> serde_json::Value {
         "patternProperties",
         "enum",
         "const",
+        "default",
         "minimum",
         "maximum",
         "exclusiveMinimum",
@@ -231,6 +245,7 @@ mod tests {
                     "maxLength": 512,
                     "pattern": "^/",
                     "format": "uri-reference",
+                    "default": "/tmp/input.txt",
                     "description": "absolute path"
                 },
                 "count": {
@@ -270,6 +285,7 @@ mod tests {
         assert_eq!(json["properties"]["path"]["maxLength"], 512);
         assert_eq!(json["properties"]["path"]["pattern"], "^/");
         assert_eq!(json["properties"]["path"]["format"], "uri-reference");
+        assert_eq!(json["properties"]["path"]["default"], "/tmp/input.txt");
         assert_eq!(json["properties"]["count"]["minimum"], 1);
         assert_eq!(json["properties"]["count"]["maximum"], 100);
         assert_eq!(json["properties"]["count"]["multipleOf"], 1);

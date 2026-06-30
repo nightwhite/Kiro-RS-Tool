@@ -328,10 +328,7 @@ fn compress_tool_use_inputs_pass(state: &mut ConversationState, max_chars: usize
             && let Some(tool_uses) = assistant_msg.assistant_response_message.tool_uses.as_mut()
         {
             for tool_use in tool_uses {
-                let serialized = serde_json::to_string(&tool_use.input).unwrap_or_default();
-                if serialized.chars().count() > max_chars {
-                    saved += truncate_json_value_strings(&mut tool_use.input, max_chars);
-                }
+                saved += truncate_json_value_strings(&mut tool_use.input, max_chars);
             }
         }
     }
