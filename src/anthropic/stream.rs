@@ -708,6 +708,8 @@ impl SseStateManager {
         output_tokens: i32,
         cache_creation_input_tokens: i32,
         cache_read_input_tokens: i32,
+        cache_creation_5m_input_tokens: i32,
+        cache_creation_1h_input_tokens: i32,
     ) -> Vec<SseEvent> {
         let mut events = Vec::new();
 
@@ -740,7 +742,11 @@ impl SseStateManager {
                         "input_tokens": input_tokens,
                         "output_tokens": output_tokens,
                         "cache_creation_input_tokens": cache_creation_input_tokens,
-                        "cache_read_input_tokens": cache_read_input_tokens
+                        "cache_read_input_tokens": cache_read_input_tokens,
+                        "cache_creation": {
+                            "ephemeral_5m_input_tokens": cache_creation_5m_input_tokens,
+                            "ephemeral_1h_input_tokens": cache_creation_1h_input_tokens
+                        }
                     }
                 }),
             ));
@@ -817,6 +823,11 @@ impl StreamContext {
         self.cache_usage.split_against_total(total_real)
     }
 
+    pub fn resolved_usage_with_ttl_breakdown(&self) -> (i32, i32, i32, i32, i32) {
+        let total_real = self.context_input_tokens.unwrap_or(self.input_tokens);
+        self.cache_usage.split_with_ttl_breakdown(total_real)
+    }
+
     /// 创建 StreamContext
     pub fn new_with_thinking(
         model: impl Into<String>,
@@ -852,8 +863,13 @@ impl StreamContext {
 
     /// 生成 message_start 事件
     pub fn create_message_start_event(&self) -> serde_json::Value {
-        let (input_tokens, cache_creation_input_tokens, cache_read_input_tokens) =
-            self.cache_usage.split_against_total(self.input_tokens);
+        let (
+            input_tokens,
+            cache_creation_input_tokens,
+            cache_read_input_tokens,
+            cache_creation_5m_input_tokens,
+            cache_creation_1h_input_tokens,
+        ) = self.cache_usage.split_with_ttl_breakdown(self.input_tokens);
 
         json!({
             "type": "message_start",
@@ -869,7 +885,11 @@ impl StreamContext {
                     "input_tokens": input_tokens,
                     "output_tokens": 1,
                     "cache_creation_input_tokens": cache_creation_input_tokens,
-                    "cache_read_input_tokens": cache_read_input_tokens
+                    "cache_read_input_tokens": cache_read_input_tokens,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": cache_creation_5m_input_tokens,
+                        "ephemeral_1h_input_tokens": cache_creation_1h_input_tokens
+                    }
                 }
             }
         })
@@ -1523,12 +1543,20 @@ impl StreamContext {
             let error_type = err.error_type();
             let error_message = err.message();
             events.extend(self.close_reasoning_if_open());
-            let (final_input_tokens, cache_creation, cache_read) = self.resolved_usage();
+            let (
+                final_input_tokens,
+                cache_creation,
+                cache_read,
+                cache_creation_5m,
+                cache_creation_1h,
+            ) = self.resolved_usage_with_ttl_breakdown();
             events.extend(self.state_manager.generate_final_events(
                 final_input_tokens,
                 self.output_tokens,
                 cache_creation,
                 cache_read,
+                cache_creation_5m,
+                cache_creation_1h,
             ));
             events.push(SseEvent::new(
                 "error",
@@ -1633,7 +1661,8 @@ impl StreamContext {
             events.extend(self.create_text_delta_events(" "));
         }
 
-        let (final_input_tokens, cache_creation, cache_read) = self.resolved_usage();
+        let (final_input_tokens, cache_creation, cache_read, cache_creation_5m, cache_creation_1h) =
+            self.resolved_usage_with_ttl_breakdown();
 
         // 生成最终事件
         events.extend(self.state_manager.generate_final_events(
@@ -1641,6 +1670,8 @@ impl StreamContext {
             self.output_tokens,
             cache_creation,
             cache_read,
+            cache_creation_5m,
+            cache_creation_1h,
         ));
         events
     }
@@ -1725,7 +1756,8 @@ impl BufferedStreamContext {
             self.initial_events_generated = true;
         }
 
-        let (final_input_tokens, cache_creation, cache_read) = self.inner.resolved_usage();
+        let (final_input_tokens, cache_creation, cache_read, cache_creation_5m, cache_creation_1h) =
+            self.inner.resolved_usage_with_ttl_breakdown();
 
         // 生成最终事件（StreamContext 内部会用同样的优先级）
         let final_events = self.inner.generate_final_events();
@@ -1739,6 +1771,10 @@ impl BufferedStreamContext {
                         usage["input_tokens"] = serde_json::json!(final_input_tokens);
                         usage["cache_creation_input_tokens"] = serde_json::json!(cache_creation);
                         usage["cache_read_input_tokens"] = serde_json::json!(cache_read);
+                        usage["cache_creation"] = serde_json::json!({
+                            "ephemeral_5m_input_tokens": cache_creation_5m,
+                            "ephemeral_1h_input_tokens": cache_creation_1h
+                        });
                     }
                 }
             }
@@ -1823,6 +1859,8 @@ mod tests {
             cache_read: 30,
             cache_covered_est: 80,
             prompt_total_est: 100,
+            cache_creation_5m: 50,
+            cache_creation_1h: 0,
         };
 
         let event = ctx.create_message_start_event();
@@ -1834,12 +1872,38 @@ mod tests {
     }
 
     #[test]
+    fn message_start_includes_cache_creation_ttl_breakdown() {
+        let mut ctx = StreamContext::new_with_thinking("test-model", 100, false, HashMap::new());
+        ctx.cache_usage = crate::anthropic::cache_metering::CacheUsage {
+            cache_read: 30,
+            cache_covered_est: 80,
+            prompt_total_est: 100,
+            cache_creation_5m: 50,
+            cache_creation_1h: 0,
+        };
+
+        let event = ctx.create_message_start_event();
+        let usage = &event["message"]["usage"];
+
+        assert_eq!(
+            usage["cache_creation"]["ephemeral_5m_input_tokens"],
+            json!(50)
+        );
+        assert_eq!(
+            usage["cache_creation"]["ephemeral_1h_input_tokens"],
+            json!(0)
+        );
+    }
+
+    #[test]
     fn cc_v1_message_start_waits_for_context_usage_event() {
         let mut ctx = BufferedStreamContext::new("test-model", 100, false, HashMap::new());
         ctx.set_cache_usage(crate::anthropic::cache_metering::CacheUsage {
             cache_read: 25,
             cache_covered_est: 70,
             prompt_total_est: 100,
+            cache_creation_5m: 45,
+            cache_creation_1h: 0,
         });
 
         ctx.process_and_buffer(&Event::AssistantResponse(

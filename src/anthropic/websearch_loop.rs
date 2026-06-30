@@ -28,7 +28,7 @@ use crate::kiro::provider::KiroProvider;
 use crate::model::config::ToolCompatibilityMode;
 use crate::token;
 
-use super::cache_metering::CacheUsagePlan;
+use super::cache_metering::{CacheUsagePlan, SharedCacheMeter};
 use super::converter::{ConversionError, get_context_window_size};
 use super::handlers::{RequestTracer, convert_request_with_mode_blocking, last_attempt_outcome};
 use super::handlers::{UsageRecordHook, map_provider_error};
@@ -518,7 +518,7 @@ async fn run_web_search_loop_inner(
     mut payload: MessagesRequest,
     hook: UsageRecordHook,
     tool_compatibility_mode: ToolCompatibilityMode,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
     mut first_byte_marker: Option<&mut StreamFirstByteMarker>,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Result<WebSearchLoopSuccess, Response> {
@@ -602,6 +602,8 @@ async fn run_web_search_loop_inner(
             }
         });
         let total_input = last_context_input.unwrap_or(fallback_input_tokens);
+        let cache_plan =
+            resolve_cache_plan_for_web_search(&cache_meter, &payload, last_credential_id);
         let (final_input, cache_creation_tokens, cache_read_tokens) =
             cache_plan.split_against_total(total_input);
 
@@ -694,7 +696,7 @@ pub(super) async fn run_web_search_loop(
     hook: UsageRecordHook,
     stream_client: bool,
     tool_compatibility_mode: ToolCompatibilityMode,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
     if stream_client {
@@ -703,7 +705,7 @@ pub(super) async fn run_web_search_loop(
             payload,
             hook,
             tool_compatibility_mode,
-            cache_plan,
+            cache_meter,
             tracer,
         )
         .await;
@@ -714,7 +716,7 @@ pub(super) async fn run_web_search_loop(
         payload,
         hook,
         tool_compatibility_mode,
-        cache_plan,
+        cache_meter,
         None,
         tracer,
     )
@@ -738,7 +740,7 @@ async fn render_deferred_sse(
     payload: MessagesRequest,
     hook: UsageRecordHook,
     tool_compatibility_mode: ToolCompatibilityMode,
-    cache_plan: CacheUsagePlan,
+    cache_meter: Option<SharedCacheMeter>,
     tracer: std::sync::Arc<RequestTracer>,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<SseBytes>(32);
@@ -751,7 +753,7 @@ async fn render_deferred_sse(
             payload,
             hook,
             tool_compatibility_mode,
-            cache_plan,
+            cache_meter,
             Some(&mut marker),
             tracer,
         )
@@ -814,6 +816,17 @@ async fn render_deferred_sse(
         )
             .into_response(),
     }
+}
+
+fn resolve_cache_plan_for_web_search(
+    cache_meter: &Option<SharedCacheMeter>,
+    payload: &MessagesRequest,
+    credential_id: u64,
+) -> CacheUsagePlan {
+    cache_meter
+        .as_ref()
+        .map(|cache| super::cache_metering::compute_cache_usage(cache, payload, credential_id))
+        .unwrap_or_default()
 }
 
 /// Single JSON response (non-streaming)
@@ -1267,5 +1280,45 @@ mod tests {
             json!(45)
         );
         assert_eq!(delta.data["usage"]["cache_read_input_tokens"], json!(67));
+    }
+
+    #[test]
+    fn web_search_cache_plan_uses_final_credential_id() {
+        use super::super::cache_metering::CacheMeter;
+
+        let cache = Some(Arc::new(CacheMeter::new(None)));
+        let payload = MessagesRequest {
+            model: "claude-sonnet-4-5-20250929".to_string(),
+            max_tokens: 64,
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: json!([{
+                    "type": "text",
+                    "text": "cacheable web search context ".repeat(260),
+                    "cache_control": {"type": "ephemeral"}
+                }]),
+            }],
+            stream: false,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            output_config: None,
+            metadata: None,
+        };
+
+        let first = resolve_cache_plan_for_web_search(&cache, &payload, 42);
+        assert_eq!(first.cache_read, 0);
+        assert!(
+            first.cache_covered_est > 0,
+            "web_search loop should compute cache coverage from the final payload"
+        );
+        first.commit_success();
+
+        let second = resolve_cache_plan_for_web_search(&cache, &payload, 42);
+        assert_eq!(
+            second.cache_read, first.cache_covered_est,
+            "web_search loop must reuse cache by upstream credential_id"
+        );
     }
 }
