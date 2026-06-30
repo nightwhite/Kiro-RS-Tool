@@ -27,7 +27,7 @@ pub fn compress_tools_if_needed(tools: &[Tool], max_bytes: usize) -> Vec<Tool> {
 
     let mut compressed: Vec<Tool> = tools.iter().map(simplify_schema).collect();
     let size_after_schema = estimate_tools_size(&compressed);
-    if size_after_schema <= max_bytes {
+    if size_after_schema == 0 || size_after_schema <= max_bytes {
         return compressed;
     }
 
@@ -87,70 +87,77 @@ fn simplify_json_schema(schema: &serde_json::Value) -> serde_json::Value {
     };
 
     let mut result = serde_json::Map::new();
-    for key in [
-        "$schema",
-        "$ref",
-        "type",
-        "required",
-        "additionalProperties",
-        "patternProperties",
-        "enum",
-        "const",
-        "default",
-        "minimum",
-        "maximum",
-        "exclusiveMinimum",
-        "exclusiveMaximum",
-        "multipleOf",
-        "minLength",
-        "maxLength",
-        "pattern",
-        "format",
-        "minItems",
-        "maxItems",
-        "uniqueItems",
-        "prefixItems",
-    ] {
-        if let Some(value) = obj.get(key) {
-            result.insert(key.to_string(), value.clone());
+    for (key, value) in obj {
+        if key == "description" {
+            continue;
         }
-    }
 
-    for key in ["oneOf", "anyOf", "allOf"] {
-        if let Some(serde_json::Value::Array(values)) = obj.get(key) {
-            result.insert(
-                key.to_string(),
-                serde_json::Value::Array(values.iter().map(simplify_json_schema).collect()),
-            );
-        }
-    }
-
-    for key in ["$defs", "definitions"] {
-        if let Some(serde_json::Value::Object(defs)) = obj.get(key) {
-            let mut simplified_defs = serde_json::Map::new();
-            for (name, def_schema) in defs {
-                simplified_defs.insert(name.clone(), simplify_json_schema(def_schema));
+        let simplified = match key.as_str() {
+            "properties" | "patternProperties" | "$defs" | "definitions" | "dependentSchemas" => {
+                simplify_schema_map(value)
             }
-            result.insert(key.to_string(), serde_json::Value::Object(simplified_defs));
-        }
-    }
+            "oneOf" | "anyOf" | "allOf" | "prefixItems" => simplify_schema_array(value),
+            "items"
+            | "additionalProperties"
+            | "additionalItems"
+            | "unevaluatedProperties"
+            | "unevaluatedItems"
+            | "not"
+            | "if"
+            | "then"
+            | "else"
+            | "propertyNames"
+            | "contains" => simplify_schema_or_clone(value),
+            "dependencies" => simplify_dependencies(value),
+            _ => value.clone(),
+        };
 
-    if let Some(value) = obj.get("items") {
-        result.insert("items".to_string(), simplify_json_schema(value));
-    }
-
-    if let Some(serde_json::Value::Object(props)) = obj.get("properties") {
-        let mut simplified_props = serde_json::Map::new();
-        for (name, prop_schema) in props {
-            simplified_props.insert(name.clone(), simplify_json_schema(prop_schema));
-        }
-        result.insert(
-            "properties".to_string(),
-            serde_json::Value::Object(simplified_props),
-        );
+        result.insert(key.clone(), simplified);
     }
 
     serde_json::Value::Object(result)
+}
+
+fn simplify_schema_or_clone(value: &serde_json::Value) -> serde_json::Value {
+    if value.is_object() {
+        simplify_json_schema(value)
+    } else {
+        value.clone()
+    }
+}
+
+fn simplify_schema_array(value: &serde_json::Value) -> serde_json::Value {
+    let Some(values) = value.as_array() else {
+        return value.clone();
+    };
+
+    serde_json::Value::Array(values.iter().map(simplify_json_schema).collect())
+}
+
+fn simplify_schema_map(value: &serde_json::Value) -> serde_json::Value {
+    let Some(values) = value.as_object() else {
+        return value.clone();
+    };
+
+    let mut simplified = serde_json::Map::new();
+    for (name, schema) in values {
+        simplified.insert(name.clone(), simplify_json_schema(schema));
+    }
+
+    serde_json::Value::Object(simplified)
+}
+
+fn simplify_dependencies(value: &serde_json::Value) -> serde_json::Value {
+    let Some(values) = value.as_object() else {
+        return value.clone();
+    };
+
+    let mut simplified = serde_json::Map::new();
+    for (name, dependency) in values {
+        simplified.insert(name.clone(), simplify_schema_or_clone(dependency));
+    }
+
+    serde_json::Value::Object(simplified)
 }
 
 #[cfg(test)]
@@ -368,6 +375,100 @@ mod tests {
                 .unwrap()
                 .get("description")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn compress_tools_preserves_conditional_and_dependency_schema_keywords() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["file", "url"],
+                    "description": "input mode"
+                }
+            },
+            "if": {
+                "properties": {
+                    "mode": {"const": "file"}
+                },
+                "description": "file mode condition"
+            },
+            "then": {
+                "required": ["path"],
+                "description": "file mode requirements"
+            },
+            "else": {
+                "required": ["url"],
+                "description": "url mode requirements"
+            },
+            "not": {
+                "required": ["forbidden"],
+                "description": "forbidden field"
+            },
+            "propertyNames": {
+                "pattern": "^[a-z_]+$",
+                "description": "property name pattern"
+            },
+            "contains": {
+                "type": "string",
+                "description": "array contains schema"
+            },
+            "dependentSchemas": {
+                "token": {
+                    "required": ["auth"],
+                    "description": "token dependency schema"
+                }
+            },
+            "dependencies": {
+                "legacy": {
+                    "required": ["legacy_id"],
+                    "description": "legacy dependency schema"
+                },
+                "mode": ["path"]
+            },
+            "dependentRequired": {
+                "mode": ["path"]
+            }
+        });
+        let tools: Vec<_> = (0..20)
+            .map(|idx| make_tool(&format!("tool_{idx}"), &"x".repeat(2_000), schema.clone()))
+            .collect();
+
+        let compressed = super::compress_tools_if_needed(&tools, 20 * 1024);
+        let json = &compressed[0].tool_specification.input_schema.json;
+
+        assert_eq!(json["if"]["properties"]["mode"]["const"], "file");
+        assert_eq!(json["then"]["required"][0], "path");
+        assert_eq!(json["else"]["required"][0], "url");
+        assert_eq!(json["not"]["required"][0], "forbidden");
+        assert_eq!(json["propertyNames"]["pattern"], "^[a-z_]+$");
+        assert_eq!(json["contains"]["type"], "string");
+        assert_eq!(json["dependentSchemas"]["token"]["required"][0], "auth");
+        assert_eq!(json["dependencies"]["legacy"]["required"][0], "legacy_id");
+        assert_eq!(json["dependencies"]["mode"][0], "path");
+        assert_eq!(json["dependentRequired"]["mode"][0], "path");
+        assert!(
+            json["dependentSchemas"]["token"]
+                .as_object()
+                .unwrap()
+                .get("description")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn compress_tools_handles_zero_estimated_schema_size() {
+        let tools = vec![make_tool("", "", serde_json::Value::Null)];
+
+        let compressed = super::compress_tools_if_needed(&tools, 1);
+
+        assert_eq!(compressed[0].tool_specification.name, "");
+        assert_eq!(compressed[0].tool_specification.description, "");
+        assert_eq!(
+            compressed[0].tool_specification.input_schema.json,
+            serde_json::Value::Null
         );
     }
 
