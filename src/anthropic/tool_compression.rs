@@ -79,8 +79,22 @@ fn simplify_json_schema(schema: &serde_json::Value) -> serde_json::Value {
         "type",
         "required",
         "additionalProperties",
+        "patternProperties",
         "enum",
         "const",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "format",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "prefixItems",
     ] {
         if let Some(value) = obj.get(key) {
             result.insert(key.to_string(), value.clone());
@@ -199,6 +213,76 @@ mod tests {
         assert_eq!(target["oneOf"][1]["properties"]["id"]["type"], "string");
         assert!(
             target["oneOf"][1]["properties"]["id"]
+                .as_object()
+                .unwrap()
+                .get("description")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn compress_tools_preserves_validation_schema_keywords() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "pattern": "^/",
+                    "format": "uri-reference",
+                    "description": "absolute path"
+                },
+                "count": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "multipleOf": 1,
+                    "description": "bounded count"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 10,
+                    "uniqueItems": true,
+                    "prefixItems": [{"type": "string", "const": "primary"}],
+                    "description": "bounded tags"
+                }
+            },
+            "patternProperties": {
+                "^x-": {
+                    "type": "string",
+                    "maxLength": 20,
+                    "description": "custom extension"
+                }
+            },
+            "required": ["path"]
+        });
+        let tools: Vec<_> = (0..20)
+            .map(|idx| make_tool(&format!("tool_{idx}"), &"x".repeat(2_000), schema.clone()))
+            .collect();
+
+        let compressed = super::compress_tools_if_needed(&tools, 20 * 1024);
+        let json = &compressed[0].tool_specification.input_schema.json;
+
+        assert_eq!(json["properties"]["path"]["minLength"], 1);
+        assert_eq!(json["properties"]["path"]["maxLength"], 512);
+        assert_eq!(json["properties"]["path"]["pattern"], "^/");
+        assert_eq!(json["properties"]["path"]["format"], "uri-reference");
+        assert_eq!(json["properties"]["count"]["minimum"], 1);
+        assert_eq!(json["properties"]["count"]["maximum"], 100);
+        assert_eq!(json["properties"]["count"]["multipleOf"], 1);
+        assert_eq!(json["properties"]["tags"]["minItems"], 1);
+        assert_eq!(json["properties"]["tags"]["maxItems"], 10);
+        assert_eq!(json["properties"]["tags"]["uniqueItems"], true);
+        assert_eq!(
+            json["properties"]["tags"]["prefixItems"][0]["const"],
+            "primary"
+        );
+        assert_eq!(json["patternProperties"]["^x-"]["maxLength"], 20);
+        assert!(
+            json["properties"]["path"]
                 .as_object()
                 .unwrap()
                 .get("description")
